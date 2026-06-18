@@ -3,7 +3,7 @@
 
 import { useState, useEffect } from 'react'
 import { CheckCircle, XCircle, AlertCircle, RefreshCw, HardDrive } from 'lucide-react'
-import { supabase } from '../lib/supabase'
+import { supabase, supabaseAdmin } from '../lib/supabase'
 
 const BUCKETS_NEEDED = ['annonces', 'actualites', 'saints', 'podcasts', 'carrousel']
 const TABLES_NEEDED  = ['profiles', 'annonces', 'actualites', 'don_campagnes', 'dons',
@@ -69,9 +69,10 @@ export default function SetupDiag() {
     if (missingTables.length === 0) addLog('✓ Toutes les tables sont présentes', 'ok')
     else addLog(`${missingTables.length} table(s) manquante(s) — run supabase_setup.sql`, 'warn')
 
-    // ── 3. Vérifier les buckets Storage (lecture seule — création via SQL)
+    // ── 3. Vérifier et créer les buckets Storage via le client admin ────
     addLog('Vérification des buckets Storage…')
-    const { data: existingBuckets = [] } = await supabase.storage.listBuckets()
+    const storageClient = supabaseAdmin || supabase
+    const { data: existingBuckets = [] } = await storageClient.storage.listBuckets()
     const existingNames = (existingBuckets || []).map(b => b.name)
 
     const bucketResults = {}
@@ -79,9 +80,24 @@ export default function SetupDiag() {
       if (existingNames.includes(bucket)) {
         bucketResults[bucket] = 'ok'
         addLog(`✓ Bucket "${bucket}" existe`, 'ok')
-      } else {
+      } else if (!supabaseAdmin) {
+        // Pas de clé service_role configurée → ne peut pas créer automatiquement
         bucketResults[bucket] = 'missing'
-        addLog(`⚠ Bucket "${bucket}" manquant — run le SQL setup`, 'warn')
+        addLog(`⚠ Bucket "${bucket}" manquant — VITE_SUPABASE_SERVICE_KEY non configurée`, 'warn')
+      } else {
+        addLog(`Création du bucket "${bucket}"…`)
+        const { error } = await supabaseAdmin.storage.createBucket(bucket, {
+          public: true,
+          allowedMimeTypes: ['image/jpeg', 'image/png', 'image/webp', 'audio/mpeg', 'audio/mp4', 'audio/wav', 'video/mp4'],
+          fileSizeLimit: 52428800,
+        })
+        if (error && !error.message.includes('already exists')) {
+          bucketResults[bucket] = 'error'
+          addLog(`❌ Bucket "${bucket}" : ${error.message}`, 'error')
+        } else {
+          bucketResults[bucket] = 'created'
+          addLog(`✓ Bucket "${bucket}" créé`, 'ok')
+        }
       }
     }
     setBuckets(bucketResults)
@@ -95,7 +111,7 @@ export default function SetupDiag() {
 
   const allGood = conn === true
     && Object.values(tables).every(v => v)
-    && Object.values(buckets).every(v => v === 'ok')
+    && Object.values(buckets).every(v => v === 'ok' || v === 'created')
 
   if (allGood && status === 'done') return null // Cache le composant si tout est OK
 
@@ -150,9 +166,11 @@ export default function SetupDiag() {
           <div className="flex flex-wrap gap-1.5">
             {BUCKETS_NEEDED.map(b => (
               <span key={b} className={`text-xs px-2 py-0.5 rounded-full font-mono ${
-                buckets[b] === 'ok' ? 'bg-green-100 text-green-800'
+                buckets[b] === 'ok'      ? 'bg-green-100 text-green-800'
+                : buckets[b] === 'created' ? 'bg-blue-100 text-blue-800'
+                : buckets[b] === 'error'   ? 'bg-red-100 text-red-700'
                 : 'bg-yellow-100 text-yellow-800'}`}>
-                {b} {buckets[b] === 'missing' ? '⚠' : ''}
+                {b}{buckets[b] === 'created' ? ' ✓' : buckets[b] === 'error' ? ' ✗' : buckets[b] === 'missing' ? ' ⚠' : ''}
               </span>
             ))}
           </div>
@@ -186,20 +204,14 @@ export default function SetupDiag() {
         </div>
       )}
 
-      {/* Message buckets manquants */}
+      {/* Message buckets manquants — clé service_role absente */}
       {Object.values(buckets).some(v => v === 'missing') && (
         <div className="mt-3 p-3 bg-yellow-50 rounded-lg border border-yellow-200 text-xs text-yellow-800">
-          <strong>Buckets Storage manquants.</strong> Les buckets ne peuvent pas être créés
-          automatiquement (restriction Supabase). Exécute ce SQL dans{' '}
-          <strong>Supabase → SQL Editor</strong> :
-          <pre className="mt-2 bg-yellow-100 rounded p-2 overflow-x-auto whitespace-pre-wrap leading-relaxed">{`INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
-VALUES
-  ('annonces',   'annonces',   true, 52428800, ARRAY['image/jpeg','image/png','image/webp']),
-  ('actualites', 'actualites', true, 52428800, ARRAY['image/jpeg','image/png','image/webp']),
-  ('saints',     'saints',     true, 52428800, ARRAY['image/jpeg','image/png','image/webp']),
-  ('podcasts',   'podcasts',   true, 52428800, ARRAY['audio/mpeg','audio/mp4','audio/wav']),
-  ('carrousel',  'carrousel',  true, 52428800, ARRAY['image/jpeg','image/png','image/webp'])
-ON CONFLICT (id) DO NOTHING;`}</pre>
+          <strong>Buckets manquants.</strong> Ajoute{' '}
+          <code className="bg-yellow-100 px-1 rounded">VITE_SUPABASE_SERVICE_KEY</code>{' '}
+          dans les variables d'environnement de ton hébergeur (Vercel / Netlify / etc.)
+          avec la <strong>service_role key</strong> de Supabase → Settings → API.
+          Le diagnostic créera les buckets automatiquement au prochain chargement.
         </div>
       )}
     </div>
