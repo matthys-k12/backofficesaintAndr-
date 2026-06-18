@@ -69,7 +69,7 @@ export default function SetupDiag() {
     if (missingTables.length === 0) addLog('✓ Toutes les tables sont présentes', 'ok')
     else addLog(`${missingTables.length} table(s) manquante(s) — run supabase_setup.sql`, 'warn')
 
-    // ── 3. Vérifier et créer les buckets Storage ─────────────────────
+    // ── 3. Vérifier les buckets Storage (lecture seule — création via SQL)
     addLog('Vérification des buckets Storage…')
     const { data: existingBuckets = [] } = await supabase.storage.listBuckets()
     const existingNames = (existingBuckets || []).map(b => b.name)
@@ -80,20 +80,8 @@ export default function SetupDiag() {
         bucketResults[bucket] = 'ok'
         addLog(`✓ Bucket "${bucket}" existe`, 'ok')
       } else {
-        addLog(`Création du bucket "${bucket}"…`)
-        const { error } = await supabase.storage.createBucket(bucket, {
-          public: true,
-          allowedMimeTypes: ['image/*', 'audio/*', 'video/*'],
-          fileSizeLimit: 52428800, // 50 MB
-        })
-        // "already exists" = bucket créé avant (StrictMode double-run) → OK
-        if (error && !error.message.includes('already exists')) {
-          bucketResults[bucket] = 'error'
-          addLog(`❌ Bucket "${bucket}" : ${error.message}`, 'error')
-        } else {
-          bucketResults[bucket] = 'created'
-          addLog(`✓ Bucket "${bucket}" créé`, 'ok')
-        }
+        bucketResults[bucket] = 'missing'
+        addLog(`⚠ Bucket "${bucket}" manquant — run le SQL setup`, 'warn')
       }
     }
     setBuckets(bucketResults)
@@ -107,7 +95,7 @@ export default function SetupDiag() {
 
   const allGood = conn === true
     && Object.values(tables).every(v => v)
-    && Object.values(buckets).every(v => v === 'ok' || v === 'created')
+    && Object.values(buckets).every(v => v === 'ok')
 
   if (allGood && status === 'done') return null // Cache le composant si tout est OK
 
@@ -163,9 +151,8 @@ export default function SetupDiag() {
             {BUCKETS_NEEDED.map(b => (
               <span key={b} className={`text-xs px-2 py-0.5 rounded-full font-mono ${
                 buckets[b] === 'ok' ? 'bg-green-100 text-green-800'
-                : buckets[b] === 'created' ? 'bg-blue-100 text-blue-800'
-                : 'bg-red-100 text-red-700'}`}>
-                {b} {buckets[b] === 'created' ? '(créé)' : buckets[b] === 'error' ? '✗' : ''}
+                : 'bg-yellow-100 text-yellow-800'}`}>
+                {b} {buckets[b] === 'missing' ? '⚠' : ''}
               </span>
             ))}
           </div>
@@ -196,6 +183,23 @@ export default function SetupDiag() {
           <strong>Tables manquantes détectées.</strong> Exécute le fichier{' '}
           <code className="bg-red-100 px-1 rounded">supabase_setup.sql</code>{' '}
           dans <strong>Supabase → SQL Editor</strong>.
+        </div>
+      )}
+
+      {/* Message buckets manquants */}
+      {Object.values(buckets).some(v => v === 'missing') && (
+        <div className="mt-3 p-3 bg-yellow-50 rounded-lg border border-yellow-200 text-xs text-yellow-800">
+          <strong>Buckets Storage manquants.</strong> Les buckets ne peuvent pas être créés
+          automatiquement (restriction Supabase). Exécute ce SQL dans{' '}
+          <strong>Supabase → SQL Editor</strong> :
+          <pre className="mt-2 bg-yellow-100 rounded p-2 overflow-x-auto whitespace-pre-wrap leading-relaxed">{`INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES
+  ('annonces',   'annonces',   true, 52428800, ARRAY['image/jpeg','image/png','image/webp']),
+  ('actualites', 'actualites', true, 52428800, ARRAY['image/jpeg','image/png','image/webp']),
+  ('saints',     'saints',     true, 52428800, ARRAY['image/jpeg','image/png','image/webp']),
+  ('podcasts',   'podcasts',   true, 52428800, ARRAY['audio/mpeg','audio/mp4','audio/wav']),
+  ('carrousel',  'carrousel',  true, 52428800, ARRAY['image/jpeg','image/png','image/webp'])
+ON CONFLICT (id) DO NOTHING;`}</pre>
         </div>
       )}
     </div>
