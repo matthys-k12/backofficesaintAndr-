@@ -18,13 +18,18 @@ import Intentions from './pages/Intentions'
 import DenierCulte from './pages/DenierCulte'
 import Facturation from './pages/Facturation'
 import Contact from './pages/Contact'
+import Partage from './pages/Partage'
 
 export default function App() {
   return (
     <BrowserRouter>
       <Routes>
-        {/* Route publique — accessible sans être connecté */}
+        {/* Routes publiques — accessibles sans être connecté */}
         <Route path="login" element={<Login />} />
+
+        {/* Pages de partage (liens cliquables dans WhatsApp) */}
+        <Route path="s/:type/:id" element={<Partage />} />
+        <Route path="s/:type" element={<Partage />} />
 
         {/* Routes protégées — redirige vers /login si pas de session */}
         <Route element={<AuthGuard />}>
