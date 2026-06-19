@@ -407,13 +407,161 @@ function PageTexteJour() {
   )
 }
 
+// ── Page Annonce ─────────────────────────────────────────────────────
+function PageAnnonce({ id }) {
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    supabase
+      .from('annonces')
+      .select()
+      .eq('id', id)
+      .single()
+      .then(({ data: d }) => { setData(d); setLoading(false) })
+      .catch(() => setLoading(false))
+  }, [id])
+
+  if (loading) return <Spinner />
+
+  return (
+    <div className="min-h-screen" style={{ background: '#FAF8F6' }}>
+      <div className="max-w-lg mx-auto px-6 py-8">
+        <Header />
+
+        {data ? (
+          <>
+            {data.est_urgent && (
+              <div
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-full mb-4 text-sm font-bold"
+                style={{ background: '#FFF0F0', color: '#C0392B', border: '1.5px solid #FFCECE' }}
+              >
+                🚨 Annonce urgente
+              </div>
+            )}
+
+            <h1
+              className="text-2xl font-bold mb-4 leading-snug"
+              style={{ fontFamily: 'Georgia, serif', color: '#1A1A1A' }}
+            >
+              📢 {data.titre}
+            </h1>
+
+            <div className="w-10 h-1 rounded mb-6" style={{ background: '#8B1A2E' }} />
+
+            <div className="text-sm leading-relaxed mb-8" style={{ color: '#444', lineHeight: 1.9 }}>
+              {data.contenu?.split('\n').map((line, i) => (
+                <p key={i} className={line ? 'mb-3' : 'mb-1'}>{line || ' '}</p>
+              ))}
+            </div>
+
+            {data.created_at && (
+              <p className="text-xs mb-6" style={{ color: '#B09090' }}>
+                Publiée le {formatDate(data.created_at)}
+              </p>
+            )}
+          </>
+        ) : (
+          <div className="text-center py-12">
+            <p className="text-4xl mb-4">📢</p>
+            <p className="font-semibold mb-2" style={{ color: '#1A1A1A' }}>Annonce partagée</p>
+            <p className="text-sm mb-8" style={{ color: '#888' }}>
+              Ouvrez l'app pour lire l'annonce complète.
+            </p>
+          </div>
+        )}
+
+        <BoutonApp deepLink={`saintandre://annonces/${id}`} label="Voir dans l'app" />
+      </div>
+    </div>
+  )
+}
+
+// ── Page Recommandation App ───────────────────────────────────────────
+function PageApp() {
+  const features = [
+    { icon: '📅', label: 'Horaires des messes', desc: 'Toutes les messes de la semaine avec intentions' },
+    { icon: '📖', label: 'Texte du jour',        desc: 'Évangile et lecture du jour commentés' },
+    { icon: '🌟', label: 'Saint du jour',        desc: 'Biographie et citation du saint du jour' },
+    { icon: '📢', label: 'Annonces',             desc: 'Toutes les annonces et actualités de la paroisse' },
+    { icon: '💝', label: 'Dons',                 desc: 'Contribuez au denier du culte facilement' },
+    { icon: '⛪', label: 'Sacrements',           desc: 'Demandes de casuel et de sacrements en ligne' },
+  ]
+
+  return (
+    <div className="min-h-screen" style={{ background: '#FAF8F6' }}>
+      <div className="max-w-lg mx-auto px-6 py-8">
+        <Header />
+
+        <div
+          className="w-full rounded-3xl p-8 mb-8 text-white text-center"
+          style={{ background: 'linear-gradient(135deg, #8B1A2E 0%, #4A0E1A 100%)' }}
+        >
+          <div
+            className="w-16 h-16 rounded-2xl mx-auto mb-4 flex items-center justify-center"
+            style={{ background: 'rgba(255,255,255,0.15)' }}
+          >
+            <Cross size={32} color="white" />
+          </div>
+          <h1 className="text-2xl font-bold mb-2" style={{ fontFamily: 'Georgia, serif' }}>
+            App Cathédrale Saint André
+          </h1>
+          <p className="text-sm opacity-80">Restez connecté à la vie de votre paroisse</p>
+        </div>
+
+        <p
+          className="text-xs font-bold uppercase tracking-wider mb-4"
+          style={{ color: '#8B1A2E', letterSpacing: '0.1em' }}
+        >
+          Ce que vous trouverez dans l'app
+        </p>
+
+        <div className="space-y-3 mb-8">
+          {features.map(f => (
+            <div
+              key={f.label}
+              className="flex items-start gap-4 p-4 rounded-2xl"
+              style={{ background: 'white', border: '1px solid #F0E8E8' }}
+            >
+              <span style={{ fontSize: 24 }}>{f.icon}</span>
+              <div>
+                <p className="font-semibold text-sm" style={{ color: '#1A1A1A' }}>{f.label}</p>
+                <p className="text-xs mt-0.5" style={{ color: '#888' }}>{f.desc}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div
+          className="p-5 rounded-xl mb-8 text-center"
+          style={{ background: '#FFF8E8', borderLeft: '4px solid #8B1A2E' }}
+        >
+          <p className="text-sm italic" style={{ color: '#444' }}>
+            « Là où deux ou trois sont réunis en mon nom,<br />je suis au milieu d'eux. »
+          </p>
+          <p className="text-xs mt-2 font-semibold" style={{ color: '#8B1A2E' }}>Matthieu 18,20</p>
+        </div>
+
+        <BoutonApp deepLink="saintandre://home" label="Ouvrir l'app" />
+
+        <p className="text-xs text-center mt-4" style={{ color: '#B09090' }}>
+          Contactez la paroisse pour obtenir l'application.
+        </p>
+      </div>
+    </div>
+  )
+}
+
 // ── Composant principal ──────────────────────────────────────────────
 export default function Partage() {
   const { type, id } = useParams()
+  const path = window.location.pathname
 
-  if (type === 'actualites' && id) return <PageActualite id={id} />
-  if (type === 'saint-du-jour')    return <PageSaintJour />
-  if (type === 'texte-du-jour')    return <PageTexteJour />
+  if (path.includes('/s/app'))           return <PageApp />
+  if (type === 'actualites' && id)       return <PageActualite id={id} />
+  if (type === 'annonces'   && id)       return <PageAnnonce id={id} />
+  if (type === 'saint-du-jour')          return <PageSaintJour />
+  if (type === 'texte-du-jour')          return <PageTexteJour />
 
   return (
     <div className="min-h-screen flex items-center justify-center"

@@ -28,8 +28,9 @@ export default function App() {
         <Route path="login" element={<Login />} />
 
         {/* Pages de partage (liens cliquables dans WhatsApp) */}
+        <Route path="s/app"       element={<Partage />} />
         <Route path="s/:type/:id" element={<Partage />} />
-        <Route path="s/:type" element={<Partage />} />
+        <Route path="s/:type"     element={<Partage />} />
 
         {/* Routes protégées — redirige vers /login si pas de session */}
         <Route element={<AuthGuard />}>
