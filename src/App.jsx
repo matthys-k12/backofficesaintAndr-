@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { AuthProvider, useAuth } from './lib/AuthContext'
 import AuthGuard from './components/AuthGuard'
 import Layout from './components/Layout'
 import Login from './pages/Login'
@@ -14,48 +15,69 @@ import Podcasts from './pages/Podcasts'
 import Carrousel from './pages/Carrousel'
 import Utilisateurs from './pages/Utilisateurs'
 import Parametres from './pages/Parametres'
-import Intentions from './pages/Intentions'
+import Evenements from './pages/Evenements'
 import DenierCulte from './pages/DenierCulte'
 import Facturation from './pages/Facturation'
 import Contact from './pages/Contact'
 import Partage from './pages/Partage'
+import Notifications from './pages/Notifications'
+
+function PermissionRoute({ perm, adminOnly, children }) {
+  const { isSuperAdmin, hasPermission, permissions } = useAuth()
+
+  // Permissions encore en cours de chargement
+  if (permissions === undefined && !isSuperAdmin) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div
+          className="w-6 h-6 rounded-full border-2 animate-spin"
+          style={{ borderColor: '#8B1A2E', borderTopColor: 'transparent' }}
+        />
+      </div>
+    )
+  }
+
+  if (adminOnly && !isSuperAdmin) return <Navigate to="/" replace />
+  if (perm && !hasPermission(perm)) return <Navigate to="/" replace />
+  return children
+}
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <Routes>
-        {/* Routes publiques — accessibles sans être connecté */}
-        <Route path="login" element={<Login />} />
+    <AuthProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route path="login" element={<Login />} />
 
-        {/* Pages de partage (liens cliquables dans WhatsApp) */}
-        <Route path="s/app"       element={<Partage />} />
-        <Route path="s/:type/:id" element={<Partage />} />
-        <Route path="s/:type"     element={<Partage />} />
+          <Route path="s/app"       element={<Partage />} />
+          <Route path="s/:type/:id" element={<Partage />} />
+          <Route path="s/:type"     element={<Partage />} />
 
-        {/* Routes protégées — redirige vers /login si pas de session */}
-        <Route element={<AuthGuard />}>
-          <Route element={<Layout />}>
-            <Route index element={<Dashboard />} />
-            <Route path="messes" element={<Messes />} />
-            <Route path="casuels" element={<Casuels />} />
-            <Route path="dons" element={<Dons />} />
-            <Route path="annonces" element={<Annonces />} />
-            <Route path="actualites" element={<Actualites />} />
-            <Route path="saint-jour" element={<SaintJour />} />
-            <Route path="texte-jour" element={<TexteJour />} />
-            <Route path="podcasts" element={<Podcasts />} />
-            <Route path="carrousel" element={<Carrousel />} />
-            <Route path="intentions" element={<Intentions />} />
-            <Route path="denier-culte" element={<DenierCulte />} />
-            <Route path="facturation" element={<Facturation />} />
-            <Route path="utilisateurs" element={<Utilisateurs />} />
-            <Route path="contact" element={<Contact />} />
-            <Route path="parametres" element={<Parametres />} />
+          <Route element={<AuthGuard />}>
+            <Route element={<Layout />}>
+              <Route index element={<Dashboard />} />
+              <Route path="messes"       element={<PermissionRoute perm="messes">      <Messes />      </PermissionRoute>} />
+              <Route path="casuels"      element={<PermissionRoute perm="casuels">     <Casuels />     </PermissionRoute>} />
+              <Route path="dons"         element={<PermissionRoute perm="dons">        <Dons />        </PermissionRoute>} />
+              <Route path="annonces"     element={<PermissionRoute perm="annonces">    <Annonces />    </PermissionRoute>} />
+              <Route path="actualites"   element={<PermissionRoute perm="actualites">  <Actualites />  </PermissionRoute>} />
+              <Route path="saint-jour"   element={<PermissionRoute perm="saint_jour">  <SaintJour />   </PermissionRoute>} />
+              <Route path="texte-jour"   element={<PermissionRoute perm="texte_jour">  <TexteJour />   </PermissionRoute>} />
+              <Route path="podcasts"     element={<PermissionRoute perm="podcasts">    <Podcasts />    </PermissionRoute>} />
+              <Route path="carrousel"    element={<PermissionRoute perm="carrousel">   <Carrousel />   </PermissionRoute>} />
+              <Route path="evenements"   element={<PermissionRoute perm="evenements">  <Evenements />  </PermissionRoute>} />
+              <Route path="denier-culte" element={<PermissionRoute perm="denier_culte"><DenierCulte /></PermissionRoute>} />
+              <Route path="facturation"  element={<PermissionRoute perm="facturation"> <Facturation /> </PermissionRoute>} />
+              <Route path="utilisateurs" element={<PermissionRoute perm="utilisateurs"><Utilisateurs /></PermissionRoute>} />
+              <Route path="contact"      element={<PermissionRoute perm="contact">     <Contact />     </PermissionRoute>} />
+              <Route path="notifications" element={<PermissionRoute perm="notifications"><Notifications /></PermissionRoute>} />
+              <Route path="parametres"   element={<PermissionRoute adminOnly>          <Parametres />  </PermissionRoute>} />
+            </Route>
           </Route>
-        </Route>
 
-        <Route path="*" element={<Navigate to="/" />} />
-      </Routes>
-    </BrowserRouter>
+          <Route path="*" element={<Navigate to="/" />} />
+        </Routes>
+      </BrowserRouter>
+    </AuthProvider>
   )
 }

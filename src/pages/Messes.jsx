@@ -19,20 +19,6 @@ function getJour(dateStr) {
   return DOW[new Date(dateStr + 'T12:00:00').getDay()] || null
 }
 
-function getPeriodRange(periode) {
-  const now = new Date()
-  const y = now.getFullYear(), m = now.getMonth()
-  const monday = new Date(now); monday.setDate(now.getDate() - ((now.getDay() + 6) % 7)); monday.setHours(0,0,0,0)
-  const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6)
-  if (periode === 'semaine') return { start: monday.toISOString().slice(0,10), end: sunday.toISOString().slice(0,10) }
-  if (periode === 'mois')    return { start: `${y}-${String(m+1).padStart(2,'0')}-01`, end: `${y}-${String(m+1).padStart(2,'0')}-31` }
-  if (periode === 'mois_dernier') {
-    const pm = m === 0 ? 12 : m; const py = m === 0 ? y - 1 : y
-    return { start: `${py}-${String(pm).padStart(2,'0')}-01`, end: `${py}-${String(pm).padStart(2,'0')}-31` }
-  }
-  if (periode === 'trimestre') return { start: `${y}-${String(Math.floor(m/3)*3+1).padStart(2,'0')}-01`, end: `${y}-12-31` }
-  return null
-}
 
 export default function Messes() {
   const [horaires, setHoraires] = useState([])
@@ -45,7 +31,6 @@ export default function Messes() {
   const [filtreStatut, setFiltreStatut] = useState('tout')
   const [filtreType, setFiltreType] = useState('tout')
   const [filtreJour, setFiltreJour] = useState('tout')
-  const [filtrePeriode, setFiltrePeriode] = useState('tout')
   const [filtreDateDebut, setFiltreDateDebut] = useState('')
   const [filtreDateFin, setFiltreDateFin] = useState('')
   const [search, setSearch] = useState('')
@@ -64,37 +49,50 @@ export default function Messes() {
   const loadDemandes = useCallback(async () => {
     setLoadingD(true)
     const useJourFilter = filtreJour !== 'tout'
+    const hasSearch = search.trim().length > 0
 
     let query = supabase.from('messe_demandes')
-      .select('*, profiles(nom, telephone)', { count: 'exact' })
+      .select('*', { count: 'exact' })
       .order('date_messe', { ascending: false })
 
     if (filtreStatut !== 'tout') query = query.eq('statut', filtreStatut)
     if (filtreType !== 'tout') query = query.eq('type_messe', filtreType)
+    if (filtreDateDebut) query = query.gte('date_messe', filtreDateDebut)
+    if (filtreDateFin)   query = query.lte('date_messe', filtreDateFin + 'T23:59:59')
 
-    const range = getPeriodRange(filtrePeriode)
-    if (range) {
-      query = query.gte('date_messe', range.start).lte('date_messe', range.end)
-    } else {
-      if (filtreDateDebut) query = query.gte('date_messe', filtreDateDebut)
-      if (filtreDateFin) query = query.lte('date_messe', filtreDateFin)
-    }
-
-    if (!useJourFilter) {
+    // Pas de pagination si filtre jour ou recherche (on filtre côté client)
+    if (!useJourFilter && !hasSearch) {
       query = query.range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1)
     }
 
     const { data, count } = await query
-    if (useJourFilter) {
-      const filtered = (data || []).filter(r => getJour(r.date_messe) === filtreJour)
-      setDemandes(filtered)
-      setTotal(filtered.length)
-    } else {
-      setDemandes(data || [])
-      setTotal(count || 0)
+    let rows = data || []
+
+    // Fetch profils séparé — évite le join silencieux
+    const ids = [...new Set(rows.map(r => r.user_id).filter(Boolean))]
+    const profsMap = {}
+    if (ids.length > 0) {
+      const { data: profs } = await supabase.from('profiles').select('id, nom, telephone').in('id', ids)
+      ;(profs || []).forEach(p => { profsMap[p.id] = p })
     }
+    rows = rows.map(r => ({ ...r, profiles: profsMap[r.user_id] || null }))
+
+    if (useJourFilter) rows = rows.filter(r => getJour(r.date_messe) === filtreJour)
+
+    // Recherche client-side (nom paroissien, intention, nom tiers)
+    if (hasSearch) {
+      const sq = search.trim().toLowerCase()
+      rows = rows.filter(r =>
+        r.profiles?.nom?.toLowerCase().includes(sq) ||
+        r.intention?.toLowerCase().includes(sq) ||
+        r.nom_tiers?.toLowerCase().includes(sq)
+      )
+    }
+
+    setDemandes(rows)
+    setTotal(useJourFilter || hasSearch ? rows.length : (count || 0))
     setLoadingD(false)
-  }, [page, filtreStatut, filtreType, filtreJour, filtrePeriode, filtreDateDebut, filtreDateFin])
+  }, [page, filtreStatut, filtreType, filtreJour, filtreDateDebut, filtreDateFin, search])
 
   useEffect(() => { loadHoraires() }, [])
   useEffect(() => { loadDemandes() }, [loadDemandes])
@@ -143,84 +141,82 @@ export default function Messes() {
     loadDemandes()
   }
 
-  const exportCSV = async () => {
-    let query = supabase.from('messe_demandes')
-      .select('*, profiles(nom, telephone)')
-      .order('date_messe', { ascending: false })
-    if (filtreStatut !== 'tout') query = query.eq('statut', filtreStatut)
-    if (filtreType !== 'tout') query = query.eq('type_messe', filtreType)
-    const range = getPeriodRange(filtrePeriode)
-    if (range) {
-      query = query.gte('date_messe', range.start).lte('date_messe', range.end)
-    } else {
-      if (filtreDateDebut) query = query.gte('date_messe', filtreDateDebut)
-      if (filtreDateFin) query = query.lte('date_messe', filtreDateFin)
-    }
-    const { data } = await query
-    let rows = data || []
-    if (filtreJour !== 'tout') rows = rows.filter(r => getJour(r.date_messe) === filtreJour)
-
-    const header = ['Nom', 'Téléphone', 'Type', 'Date messe', 'Jour', 'Intention', 'Montant', 'Statut', 'Date demande']
-    const body = rows.map(d => [
-      d.profiles?.nom || '', d.profiles?.telephone || '',
-      d.type_messe || '', d.date_messe || '', getJour(d.date_messe) || '',
-      `"${(d.intention || '').replace(/"/g, '""')}"`,
-      d.montant || '', d.statut || '', d.created_at?.slice(0, 10) || ''
-    ])
-    const csv = '﻿' + [header, ...body].map(r => r.join(',')).join('\n')
-    const suffix = filtrePeriode !== 'tout' ? `_${filtrePeriode}` : ''
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }))
-    a.download = `messes${suffix}.csv`
-    a.click()
-  }
-
   const exportWord = async () => {
     let query = supabase.from('messe_demandes')
-      .select('*, profiles(nom, telephone)')
+      .select('*')
       .order('date_messe', { ascending: false })
     if (filtreStatut !== 'tout') query = query.eq('statut', filtreStatut)
     if (filtreType !== 'tout') query = query.eq('type_messe', filtreType)
-    const range = getPeriodRange(filtrePeriode)
-    if (range) {
-      query = query.gte('date_messe', range.start).lte('date_messe', range.end)
-    } else {
-      if (filtreDateDebut) query = query.gte('date_messe', filtreDateDebut)
-      if (filtreDateFin) query = query.lte('date_messe', filtreDateFin)
-    }
+    if (filtreDateDebut) query = query.gte('date_messe', filtreDateDebut)
+    if (filtreDateFin)   query = query.lte('date_messe', filtreDateFin + 'T23:59:59')
     const { data } = await query
     let rows = data || []
+
+    // Fetch profils pour l'export
+    const ids = [...new Set(rows.map(r => r.user_id).filter(Boolean))]
+    const profsMap = {}
+    if (ids.length > 0) {
+      const { data: profs } = await supabase.from('profiles').select('id, nom, telephone').in('id', ids)
+      ;(profs || []).forEach(p => { profsMap[p.id] = p })
+    }
+    rows = rows.map(r => ({ ...r, profiles: profsMap[r.user_id] || null }))
+
     if (filtreJour !== 'tout') rows = rows.filter(r => getJour(r.date_messe) === filtreJour)
 
-    const lignes = rows.map(d => `
-      <tr>
-        <td>${fmtDate(d.date_messe)}</td>
-        <td>${d.profiles?.nom || '—'}</td>
-        <td>${d.profiles?.telephone || '—'}</td>
-        <td>${TYPE_LABELS[d.type_messe] || d.type_messe || '—'}</td>
-        <td>${d.intention || '—'}</td>
-        <td>${fmtMontant(d.montant)}</td>
-        <td>${STATUT_LABELS[d.statut] || d.statut || '—'}</td>
-      </tr>`).join('')
+    // Grouper par type de messe
+    const typeOrder = ['action_de_grace', 'assistance_protection', 'repos_ame']
+    const types = typeOrder.filter(t => rows.some(r => r.type_messe === t))
+    const autresTypes = [...new Set(rows.map(r => r.type_messe).filter(t => !typeOrder.includes(t)))]
+    const allTypes = [...types, ...autresTypes]
+
+    // Période couverte par l'export
+    const dates = rows.map(r => r.date_messe).filter(Boolean).sort()
+    const periodeStr = dates.length
+      ? `Du ${fmtDate(dates[0])} au ${fmtDate(dates[dates.length - 1])}`
+      : ''
+
+    const sections = allTypes.map(type => {
+      const group = rows.filter(r => r.type_messe === type)
+      const items = group
+        .map(d => d.intention?.trim())
+        .filter(Boolean)
+        .map(i => `<li style="margin-bottom:4pt;">${i}</li>`)
+        .join('')
+      return `
+        <h2 style="color:#8B1A2E;font-size:13pt;margin-top:20pt;margin-bottom:4pt;border-bottom:2px solid #8B1A2E;padding-bottom:3pt;">
+          ${TYPE_LABELS[type] || type?.replace(/_/g,' ')}
+          <span style="font-size:10pt;color:#888;font-weight:normal;"> — ${group.length} intention${group.length > 1 ? 's' : ''}</span>
+        </h2>
+        ${periodeStr ? `<p style="color:#666;font-size:9pt;margin:4pt 0 10pt;">${periodeStr}</p>` : ''}
+        <ul style="margin:0;padding-left:18pt;font-size:10.5pt;line-height:1.7;">
+          ${items || '<li style="color:#999;font-style:italic;">Aucune intention renseignée</li>'}
+        </ul>`
+    }).join('')
+
+    const filtreStr = (() => {
+      const parts = []
+      if (filtreDateDebut && filtreDateFin) parts.push(`Du ${fmtDate(filtreDateDebut)} au ${fmtDate(filtreDateFin)}`)
+      else if (filtreDateDebut) parts.push(`À partir du ${fmtDate(filtreDateDebut)}`)
+      else if (filtreDateFin) parts.push(`Jusqu'au ${fmtDate(filtreDateFin)}`)
+      if (filtreStatut !== 'tout') parts.push(STATUT_LABELS[filtreStatut])
+      if (filtreType !== 'tout') parts.push(TYPE_LABELS[filtreType])
+      if (filtreJour !== 'tout') parts.push(filtreJour)
+      return parts.length ? parts.join(' · ') : 'Toutes les demandes'
+    })()
 
     const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word">
-<head><meta charset="utf-8"><title>Demandes de messes</title>
+<head><meta charset="utf-8"><title>Intentions de messe</title>
 <style>
-  body { font-family: Arial, sans-serif; font-size: 11pt; }
-  h1 { color: #8B1A2E; font-size: 16pt; margin-bottom: 4pt; }
-  p { color: #555; font-size: 9pt; margin-bottom: 12pt; }
-  table { border-collapse: collapse; width: 100%; }
-  th { background: #8B1A2E; color: white; padding: 6pt 8pt; text-align: left; font-size: 9pt; }
-  td { padding: 5pt 8pt; font-size: 9pt; border-bottom: 1px solid #ddd; }
-  tr:nth-child(even) td { background: #FAF8F5; }
+  body { font-family: Georgia, serif; font-size: 11pt; margin: 40pt; }
+  h1 { color: #8B1A2E; font-size: 18pt; margin-bottom: 2pt; }
+  .subtitle { color: #666; font-size: 9pt; font-family: Arial, sans-serif; margin-bottom: 4pt; }
+  .filtre { color: #8B1A2E; font-size: 9pt; font-family: Arial, sans-serif; margin-bottom: 20pt; font-style: italic; }
 </style></head>
 <body>
-  <h1>Demandes de messes — Cathédrale Saint André</h1>
-  <p>Exporté le ${new Date().toLocaleDateString('fr-FR')} · ${rows.length} demande(s)</p>
-  <table>
-    <thead><tr><th>Date messe</th><th>Paroissien</th><th>Téléphone</th><th>Type</th><th>Intention</th><th>Montant</th><th>Statut</th></tr></thead>
-    <tbody>${lignes}</tbody>
-  </table>
+  <h1>Intentions de messe — Cathédrale Saint André</h1>
+  <p class="subtitle">Exporté le ${new Date().toLocaleDateString('fr-FR')} · ${rows.length} intention${rows.length > 1 ? 's' : ''}</p>
+  <p class="filtre">Filtre : ${filtreStr}</p>
+  ${sections}
 </body></html>`
 
     const blob = new Blob(['﻿' + html], { type: 'application/msword' })
@@ -340,20 +336,16 @@ export default function Messes() {
           <h2 className="text-xl font-bold text-gray-900" style={{ fontFamily: 'Georgia, serif' }}>
             Demandes reçues
           </h2>
-          <div className="flex gap-2">
           <button
             onClick={exportWord}
             className="flex items-center gap-2 border border-blue-200 text-blue-700 px-4 py-2 rounded-lg text-sm hover:bg-blue-50"
+            title={filtreDateDebut || filtreDateFin ? `Export filtré : ${filtreDateDebut || '…'} → ${filtreDateFin || '…'}` : 'Exporter toutes les demandes'}
           >
             <Download size={16} /> Word
+            {(filtreDateDebut || filtreDateFin) && (
+              <span className="ml-1 px-1.5 py-0.5 text-xs rounded-full bg-blue-100 text-blue-700 font-semibold">filtré</span>
+            )}
           </button>
-          <button
-            onClick={exportCSV}
-            className="flex items-center gap-2 border border-gray-200 text-gray-600 px-4 py-2 rounded-lg text-sm hover:bg-gray-50"
-          >
-            <Download size={16} /> CSV
-          </button>
-          </div>
         </div>
 
         {/* Compteur total */}
@@ -361,9 +353,9 @@ export default function Messes() {
           <span className="text-sm font-semibold text-gray-700">
             {loadingD ? '…' : total} demande{total !== 1 ? 's' : ''}
           </span>
-          {(filtreJour !== 'tout' || filtrePeriode !== 'tout' || filtreStatut !== 'tout' || filtreType !== 'tout' || filtreDateDebut || filtreDateFin) && (
+          {(filtreJour !== 'tout' || filtreStatut !== 'tout' || filtreType !== 'tout' || filtreDateDebut || filtreDateFin) && (
             <button
-              onClick={() => { setFiltreJour('tout'); setFiltrePeriode('tout'); setFiltreStatut('tout'); setFiltreType('tout'); setFiltreDateDebut(''); setFiltreDateFin(''); setPage(1) }}
+              onClick={() => { setFiltreJour('tout'); setFiltreStatut('tout'); setFiltreType('tout'); setFiltreDateDebut(''); setFiltreDateFin(''); setPage(1) }}
               className="text-xs text-gray-400 hover:text-gray-600 underline"
             >
               Réinitialiser les filtres
@@ -373,19 +365,18 @@ export default function Messes() {
 
         {/* Filtres */}
         <div className="space-y-3 mb-4">
-          {/* Ligne 1 : période + statut + type + recherche */}
-          <div className="flex gap-3 flex-wrap">
-            <select
-              value={filtrePeriode}
-              onChange={e => { setFiltrePeriode(e.target.value); setFiltreDateDebut(''); setFiltreDateFin(''); setPage(1) }}
-              className="px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none"
-            >
-              <option value="tout">Toute la période</option>
-              <option value="semaine">Cette semaine</option>
-              <option value="mois">Ce mois</option>
-              <option value="mois_dernier">Mois dernier</option>
-              <option value="trimestre">Ce trimestre</option>
-            </select>
+          {/* Ligne 1 : dates + statut + type + recherche */}
+          <div className="flex gap-3 flex-wrap items-center">
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-gray-500 whitespace-nowrap">Du</label>
+              <input type="date" value={filtreDateDebut} onChange={e => { setFiltreDateDebut(e.target.value); setPage(1) }}
+                className="px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none" />
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-gray-500 whitespace-nowrap">Au</label>
+              <input type="date" value={filtreDateFin} onChange={e => { setFiltreDateFin(e.target.value); setPage(1) }}
+                className="px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none" />
+            </div>
             <select
               value={filtreStatut}
               onChange={e => { setFiltreStatut(e.target.value); setPage(1) }}
@@ -407,23 +398,7 @@ export default function Messes() {
               className="flex-1 min-w-[180px] max-w-xs px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none"
             />
           </div>
-          {/* Ligne 2 : dates début/fin personnalisées */}
-          {filtrePeriode === 'tout' && (
-            <div className="flex gap-3 items-center flex-wrap">
-              <span className="text-xs font-semibold uppercase tracking-widest text-gray-400" style={{ fontSize: 10 }}>Dates :</span>
-              <div className="flex items-center gap-2">
-                <label className="text-xs text-gray-500">Du</label>
-                <input type="date" value={filtreDateDebut} onChange={e => { setFiltreDateDebut(e.target.value); setPage(1) }}
-                  className="px-2 py-1.5 rounded-lg border border-gray-200 text-sm focus:outline-none" />
-              </div>
-              <div className="flex items-center gap-2">
-                <label className="text-xs text-gray-500">Au</label>
-                <input type="date" value={filtreDateFin} onChange={e => { setFiltreDateFin(e.target.value); setPage(1) }}
-                  className="px-2 py-1.5 rounded-lg border border-gray-200 text-sm focus:outline-none" />
-              </div>
-            </div>
-          )}
-          {/* Ligne 3 : filtre par jour (pills) */}
+          {/* Ligne 2 : filtre par jour (pills) */}
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-xs font-semibold uppercase tracking-widest text-gray-400 mr-1" style={{ fontSize: 10 }}>Jour :</span>
             {['tout', ...JOURS].map(j => (

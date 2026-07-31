@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Eye, EyeOff, Trash2 } from 'lucide-react'
+import { Eye, Check, X, Trash2 } from 'lucide-react'
 import { supabase, q } from '../lib/supabase'
 import DataTable from '../components/DataTable'
 import Toast from '../components/Toast'
@@ -9,15 +9,15 @@ import { fmtDate } from '../lib/helpers'
 
 const PAGE_SIZE = 25
 const TYPE_LABELS = {
-  suggestion: 'Suggestion',
-  reclamation: 'Réclamation',
-  bug: 'Signalement de bug',
-  autre: 'Autre',
+  suggestion: 'Suggestions',
+  reclamation: 'Réclamations',
+  demande_information: "Demandes d'informations",
+  autre: 'Autres',
 }
 const TYPE_COLORS = {
   suggestion: 'validee',
   reclamation: 'en_attente',
-  bug: 'annulee',
+  demande_information: 'en_attente',
   autre: 'en_attente',
 }
 
@@ -37,16 +37,35 @@ export default function Contact() {
     setLoading(true)
     let query = supabase
       .from('contact_messages')
-      .select('*, profiles(nom, telephone)', { count: 'exact' })
+      .select('*', { count: 'exact' })
       .order('created_at', { ascending: false })
       .range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1)
 
     if (filtreType !== 'tout') query = query.eq('type', filtreType)
-    if (filtreStatut === 'non_lus') query = query.eq('est_lu', false)
-    if (filtreStatut === 'lus') query = query.eq('est_lu', true)
+    if (filtreStatut === 'non_traite') query = query.eq('est_lu', false)
+    if (filtreStatut === 'traite') query = query.eq('est_lu', true)
 
-    const { data, count } = await query
-    setMessages(data || [])
+    const { data, count, error } = await query
+    if (error) { console.error('contact_messages', error); setLoading(false); return }
+
+    const rows = data || []
+
+    // Résolution des profils
+    const ids = [...new Set(rows.map(r => r.user_id).filter(Boolean))]
+    const profsMap = {}
+    if (ids.length > 0) {
+      const { data: profs } = await supabase
+        .from('profiles')
+        .select('id, nom, telephone')
+        .in('id', ids)
+      ;(profs || []).forEach(p => { profsMap[p.id] = p })
+    }
+    const enriched = rows.map(r => ({
+      ...r,
+      profiles: profsMap[r.user_id] || null,
+    }))
+
+    setMessages(enriched)
     setTotal(count || 0)
     setLoading(false)
   }, [page, filtreType, filtreStatut])
@@ -65,24 +84,14 @@ export default function Contact() {
     load()
   }
 
-  const ouvrirDetail = async (row) => {
+  const ouvrirDetail = (row) => {
     setModalDetail(row)
-    if (!row.est_lu) {
-      await q(supabase.from('contact_messages').update({ est_lu: true }).eq('id', row.id))
-      load()
-    }
   }
 
-  const nonLus = messages.filter(m => !m.est_lu).length
-
   const cols = [
-    {
-      key: 'est_lu', label: '', render: (v) => (
-        <div className={`w-2 h-2 rounded-full ${v ? 'bg-gray-300' : 'bg-amber-400'}`} title={v ? 'Lu' : 'Non lu'} />
-      )
-    },
-    { key: 'profiles', label: 'Paroissien', render: v => v?.nom || <span className="text-gray-400 italic text-xs">Anonyme</span> },
-    { key: 'type', label: 'Type', render: v => <Badge label={TYPE_LABELS[v] || v} value={TYPE_COLORS[v] || 'en_attente'} /> },
+    { key: 'created_at', label: 'Date', render: v => <span className="text-xs text-gray-500">{fmtDate(v)}</span> },
+    { key: 'profiles', label: 'Utilisateur', render: v => v?.nom || <span className="text-gray-400 italic text-xs">Anonyme</span> },
+    { key: 'profiles', label: 'Téléphone', render: v => <span className="text-sm text-gray-600">{v?.telephone || '—'}</span> },
     { key: 'objet', label: 'Objet', render: v => <span className="text-sm text-gray-700">{v || '—'}</span> },
     {
       key: 'message', label: 'Message', render: v => (
@@ -91,7 +100,13 @@ export default function Contact() {
         </span>
       )
     },
-    { key: 'created_at', label: 'Date', render: v => <span className="text-xs text-gray-500">{fmtDate(v)}</span> },
+    {
+      key: 'est_lu', label: 'Commentaire', render: v => (
+        v
+          ? <Badge label="Traité" value="validee" />
+          : <Badge label="Non traité" value="en_attente" />
+      )
+    },
   ]
 
   return (
@@ -101,8 +116,8 @@ export default function Contact() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-xl font-bold text-gray-900" style={{ fontFamily: 'Georgia, serif' }}>Messages & Suggestions</h2>
-          {nonLus > 0 && (
-            <p className="text-sm text-amber-600 mt-0.5">{nonLus} message{nonLus > 1 ? 's' : ''} non lu{nonLus > 1 ? 's' : ''}</p>
+          {filtreStatut === 'non_traite' && total > 0 && (
+            <p className="text-sm text-amber-600 mt-0.5">{total} message{total > 1 ? 's' : ''} non traité{total > 1 ? 's' : ''}</p>
           )}
         </div>
 
@@ -121,8 +136,8 @@ export default function Contact() {
             className="px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none"
           >
             <option value="tout">Tous</option>
-            <option value="non_lus">Non lus</option>
-            <option value="lus">Lus</option>
+            <option value="non_traite">Non traité</option>
+            <option value="traite">Traité</option>
           </select>
         </div>
       </div>
@@ -142,12 +157,12 @@ export default function Contact() {
             <Eye size={12} /> Voir
           </button>,
           <button
-            key="lue"
+            key="traiter"
             onClick={() => toggleLu(row)}
             className="flex items-center gap-1 border border-gray-200 text-gray-600 px-2 py-1 rounded text-xs hover:bg-gray-50"
           >
-            {row.est_lu ? <EyeOff size={12} /> : <Eye size={12} />}
-            {row.est_lu ? 'Non lu' : 'Lu'}
+            {row.est_lu ? <X size={12} /> : <Check size={12} />}
+            {row.est_lu ? 'Annuler' : 'Traiter'}
           </button>,
           <button
             key="del"
@@ -181,6 +196,13 @@ export default function Contact() {
             <div className="flex gap-4">
               <span className="text-gray-500 w-24 shrink-0">Date</span>
               <span className="text-gray-900">{fmtDate(modalDetail.created_at)}</span>
+            </div>
+            <div className="flex gap-4">
+              <span className="text-gray-500 w-24 shrink-0">Statut</span>
+              {modalDetail.est_lu
+                ? <Badge label="Traité" value="validee" />
+                : <Badge label="Non traité" value="en_attente" />
+              }
             </div>
             <div>
               <p className="text-gray-500 mb-2">Message</p>

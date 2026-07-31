@@ -1,60 +1,65 @@
-import { useState, useEffect } from 'react'
 import { NavLink } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
+import { useAuth } from '../lib/AuthContext'
+import { useState, useEffect } from 'react'
 import {
   LayoutDashboard, Mail, Receipt, Heart, Megaphone, Newspaper,
-  Star, BookOpen, Mic, Images, Users, Settings, HandHeart, LogOut, Coins, FileText, MessageSquare
+  Star, BookOpen, Mic, Images, Users, Settings, CalendarDays,
+  LogOut, Coins, FileText, MessageSquare, Bell,
 } from 'lucide-react'
 
-const navItems = [
+const NAV_ITEMS = [
   {
     section: 'PRINCIPAL',
-    items: [{ to: '/', label: 'Tableau de bord', icon: LayoutDashboard }],
+    items: [
+      { to: '/', label: 'Tableau de bord', icon: LayoutDashboard },
+    ],
   },
   {
     section: 'DEMANDES',
     items: [
-      { to: '/messes', label: 'Demandes de messe', icon: Mail },
-      { to: '/casuels', label: 'Casuels', icon: Receipt },
-      { to: '/dons', label: 'Dons & campagnes', icon: Heart },
+      { to: '/messes',  label: 'Demandes de messe', icon: Mail,    perm: 'messes'  },
+      { to: '/casuels', label: 'Casuels',            icon: Receipt, perm: 'casuels' },
+      { to: '/dons',    label: 'Dons & campagnes',   icon: Heart,   perm: 'dons'    },
     ],
   },
   {
     section: 'CONTENU',
     items: [
-      { to: '/annonces', label: 'Annonces', icon: Megaphone },
-      { to: '/actualites', label: 'Actualités', icon: Newspaper },
-      { to: '/saint-jour', label: 'Saint du jour', icon: Star },
-      { to: '/texte-jour', label: 'Texte du jour', icon: BookOpen },
-      { to: '/podcasts', label: 'Podcasts', icon: Mic },
-      { to: '/carrousel', label: 'Carrousel', icon: Images },
-      { to: '/intentions', label: 'Intentions de prière', icon: HandHeart },
+      { to: '/annonces',    label: 'Annonces',       icon: Megaphone,   perm: 'annonces'   },
+      { to: '/actualites',  label: 'Actualités',     icon: Newspaper,   perm: 'actualites' },
+      { to: '/saint-jour',  label: 'Saint du jour',  icon: Star,        perm: 'saint_jour' },
+      { to: '/texte-jour',  label: 'Texte du jour',  icon: BookOpen,    perm: 'texte_jour' },
+      { to: '/podcasts',    label: 'Podcasts',       icon: Mic,         perm: 'podcasts'   },
+      { to: '/carrousel',   label: 'Carrousel',      icon: Images,      perm: 'carrousel'  },
+      { to: '/evenements',  label: 'Évènements',     icon: CalendarDays, perm: 'evenements' },
     ],
   },
   {
     section: 'FINANCES',
     items: [
-      { to: '/denier-culte', label: 'Dénier du culte', icon: Coins },
-      { to: '/facturation', label: 'Revenus', icon: FileText },
+      { to: '/denier-culte', label: 'Dénier du culte', icon: Coins,    perm: 'denier_culte' },
+      { to: '/facturation',  label: 'Revenus',          icon: FileText, perm: 'facturation'  },
     ],
   },
   {
     section: 'GESTION',
     items: [
-      { to: '/utilisateurs', label: 'Utilisateurs', icon: Users },
-      { to: '/contact', label: 'Messages & Suggestions', icon: MessageSquare },
-      { to: '/parametres', label: 'Paramètres', icon: Settings },
+      { to: '/utilisateurs',  label: 'Utilisateurs',          icon: Users,         perm: 'utilisateurs' },
+      { to: '/contact',       label: 'Messages & Suggestions', icon: MessageSquare, perm: 'contact'      },
+      { to: '/notifications', label: 'Notifications push',    icon: Bell,          perm: 'notifications' },
+      { to: '/parametres',    label: 'Paramètres',            icon: Settings,      adminOnly: true       },
     ],
   },
 ]
 
-// Couleur d'avatar déterministe selon la lettre initiale
 const AVATAR_COLORS = ['#8B1A2E', '#1A237E', '#15803d', '#b45309', '#6d28d9', '#0369a1']
 function avatarColor(str = '') {
   return AVATAR_COLORS[str.charCodeAt(0) % AVATAR_COLORS.length]
 }
 
 export default function Sidebar() {
+  const { isSuperAdmin, hasPermission, roleName } = useAuth()
   const [profile, setProfile] = useState(null)
 
   useEffect(() => {
@@ -77,6 +82,17 @@ export default function Sidebar() {
   const displayName = profile?.nom || profile?.email?.split('@')[0] || 'Administrateur'
   const initials = displayName.slice(0, 2).toUpperCase()
   const bgColor = avatarColor(displayName)
+
+  const visibleNav = NAV_ITEMS
+    .map(group => ({
+      ...group,
+      items: group.items.filter(item => {
+        if (item.adminOnly) return isSuperAdmin
+        if (!item.perm) return true
+        return hasPermission(item.perm)
+      }),
+    }))
+    .filter(group => group.items.length > 0)
 
   return (
     <div
@@ -114,7 +130,7 @@ export default function Sidebar() {
 
       {/* ── Navigation ────────────────────────────────────── */}
       <nav className="flex-1 overflow-y-auto py-4 px-3 sidebar-nav">
-        {navItems.map((group) => (
+        {visibleNav.map((group) => (
           <div key={group.section} className="mb-5">
             <p
               className="text-xs font-semibold uppercase px-3 mb-2"
@@ -136,10 +152,7 @@ export default function Sidebar() {
                 }
                 style={({ isActive }) =>
                   isActive
-                    ? {
-                        backgroundColor: '#8B1A2E',
-                        boxShadow: '0 2px 10px rgba(139,26,46,0.45)',
-                      }
+                    ? { backgroundColor: '#8B1A2E', boxShadow: '0 2px 10px rgba(139,26,46,0.45)' }
                     : {}
                 }
               >
@@ -170,7 +183,7 @@ export default function Sidebar() {
           <div className="flex-1 min-w-0">
             <p className="text-white text-xs font-semibold truncate leading-tight">{displayName}</p>
             <p className="text-xs truncate leading-tight mt-0.5" style={{ color: 'rgba(255,255,255,0.3)', fontSize: 10 }}>
-              Administrateur
+              {roleName || 'Administrateur'}
             </p>
           </div>
           <button

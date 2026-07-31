@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Plus, Edit2, Trash2, AlertTriangle } from 'lucide-react'
+import { Plus, Edit2, Trash2, AlertTriangle, Settings } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import { supabase, q } from '../lib/supabase'
 import Modal from '../components/Modal'
@@ -11,23 +11,28 @@ import { fmtDate, nfcPayload } from '../lib/helpers'
 
 const PAGE_SIZE = 20
 
-const CATEGORIES = [
-  'liturgie', 'solidarite', 'jeunesse', 'formation',
-  'activites', 'mariage', 'prieres', 'ceb', 'associations',
-  'rappel_a_dieu', 'construction'
+// Catégories par défaut (fallback si table vide)
+const CAT_DEFAUT = [
+  { slug: 'liturgie',      label: 'Liturgie' },
+  { slug: 'solidarite',    label: 'Solidarité' },
+  { slug: 'jeunesse',      label: 'Jeunesse' },
+  { slug: 'formation',     label: 'Formation' },
+  { slug: 'activites',     label: 'Activités' },
+  { slug: 'mariage',       label: 'Mariage' },
+  { slug: 'prieres',       label: 'Prières' },
+  { slug: 'ceb',           label: 'CEB' },
+  { slug: 'associations',  label: 'Associations' },
+  { slug: 'rappel_a_dieu', label: 'Rappel à Dieu' },
+  { slug: 'construction',  label: 'Construction' },
 ]
-
-const CAT_LABELS = {
-  liturgie: 'Liturgie', solidarite: 'Solidarité', jeunesse: 'Jeunesse',
-  formation: 'Formation', activites: 'Activités', mariage: 'Mariage',
-  prieres: 'Prières', ceb: 'CEB', associations: 'Associations',
-  rappel_a_dieu: 'Rappel à Dieu', construction: 'Construction'
-}
 
 export default function Annonces() {
   const [annonces, setAnnonces] = useState([])
   const [loading, setLoading] = useState(true)
+  const [categories, setCategories] = useState(CAT_DEFAUT)
+  const [loadingCats, setLoadingCats] = useState(true)
   const [modalAnnonce, setModalAnnonce] = useState(false)
+  const [modalCats, setModalCats] = useState(false)
   const [editAnnonce, setEditAnnonce] = useState(null)
   const [filtreCat, setFiltreCat] = useState('tout')
   const [filtreUrgent, setFiltreUrgent] = useState(false)
@@ -36,9 +41,36 @@ export default function Annonces() {
   const [total, setTotal] = useState(0)
   const [toast, setToast] = useState(null)
   const [imageUrl, setImageUrl] = useState('')
+  // Gestion des catégories
+  const [newCatLabel, setNewCatLabel] = useState('')
+  const [newCatSlug, setNewCatSlug] = useState('')
+  const [savingCat, setSavingCat] = useState(false)
 
   const { register, handleSubmit, reset } = useForm()
   const showToast = (msg, type = 'success') => setToast({ msg, type })
+
+  // Chargement des catégories depuis Supabase
+  const loadCategories = useCallback(async () => {
+    setLoadingCats(true)
+    try {
+      const { data } = await supabase
+        .from('categorie_annonces')
+        .select('slug, label')
+        .eq('est_actif', true)
+        .order('ordre')
+      if (data && data.length > 0) setCategories(data)
+      else setCategories(CAT_DEFAUT)
+    } catch {
+      setCategories(CAT_DEFAUT)
+    } finally {
+      setLoadingCats(false)
+    }
+  }, [])
+
+  useEffect(() => { loadCategories() }, [loadCategories])
+
+  // Helper : label d'une catégorie par slug
+  const catLabel = (slug) => categories.find(c => c.slug === slug)?.label || slug
 
   const loadAnnonces = useCallback(async () => {
     setLoading(true)
@@ -82,7 +114,6 @@ export default function Annonces() {
 
   const saveAnnonce = async (data) => {
     try {
-      // Uniquement les colonnes de base qui existent toujours dans la table
       const payload = nfcPayload({
         titre: data.titre,
         contenu: data.contenu,
@@ -129,6 +160,34 @@ export default function Annonces() {
     } catch (err) { showToast(err.message, 'error') }
   }
 
+  // Gestion des catégories
+  const addCategorie = async () => {
+    if (!newCatLabel.trim()) return
+    const slug = newCatSlug.trim() ||
+      newCatLabel.trim().toLowerCase()
+        .normalize('NFD').replace(/[̀-ͯ]/g, '')
+        .replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '')
+    setSavingCat(true)
+    try {
+      await supabase.from('categorie_annonces').insert({
+        slug, label: newCatLabel.trim(), ordre: categories.length + 1
+      })
+      showToast('Catégorie ajoutée')
+      setNewCatLabel(''); setNewCatSlug('')
+      loadCategories()
+    } catch (err) { showToast('Erreur : ' + err.message, 'error') }
+    finally { setSavingCat(false) }
+  }
+
+  const deleteCategorie = async (slug) => {
+    if (!confirm(`Supprimer la catégorie "${catLabel(slug)}" ?`)) return
+    try {
+      await supabase.from('categorie_annonces').delete().eq('slug', slug)
+      showToast('Catégorie supprimée')
+      loadCategories()
+    } catch (err) { showToast('Erreur : ' + err.message, 'error') }
+  }
+
   const cols = [
     {
       key: 'titre', label: 'Titre', render: (v, row) => (
@@ -138,7 +197,7 @@ export default function Annonces() {
         </div>
       )
     },
-    { key: 'categorie', label: 'Catégorie', render: v => <Badge label={CAT_LABELS[v] || v} value={v} /> },
+    { key: 'categorie', label: 'Catégorie', render: v => <Badge label={catLabel(v)} value={v} /> },
     {
       key: 'est_actif', label: 'Actif', render: (v, row) => (
         <button
@@ -161,13 +220,22 @@ export default function Annonces() {
 
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-bold text-gray-900" style={{ fontFamily: 'Georgia, serif' }}>Annonces</h2>
-        <button
-          onClick={() => { setEditAnnonce(null); setImageUrl(''); reset(); setModalAnnonce(true) }}
-          className="flex items-center gap-2 text-white px-4 py-2 rounded-lg text-sm font-medium"
-          style={{ backgroundColor: '#8B1A2E' }}
-        >
-          <Plus size={16} /> Nouvelle annonce
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setModalCats(true)}
+            className="flex items-center gap-2 border border-gray-200 text-gray-600 px-3 py-2 rounded-lg text-sm hover:bg-gray-50"
+            title="Gérer les catégories"
+          >
+            <Settings size={15} /> Catégories
+          </button>
+          <button
+            onClick={() => { setEditAnnonce(null); setImageUrl(''); reset(); setModalAnnonce(true) }}
+            className="flex items-center gap-2 text-white px-4 py-2 rounded-lg text-sm font-medium"
+            style={{ backgroundColor: '#8B1A2E' }}
+          >
+            <Plus size={16} /> Nouvelle annonce
+          </button>
+        </div>
       </div>
 
       <div className="flex gap-3 flex-wrap">
@@ -183,7 +251,7 @@ export default function Annonces() {
           className="px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none"
         >
           <option value="tout">Toutes catégories</option>
-          {CATEGORIES.map(c => <option key={c} value={c}>{CAT_LABELS[c]}</option>)}
+          {categories.map(c => <option key={c.slug} value={c.slug}>{c.label}</option>)}
         </select>
         <label className="flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-200 text-sm cursor-pointer">
           <input type="checkbox" checked={filtreUrgent} onChange={e => { setFiltreUrgent(e.target.checked); setPage(1) }} />
@@ -215,6 +283,7 @@ export default function Annonces() {
         ]}
       />
 
+      {/* Modal annonce */}
       <Modal
         isOpen={modalAnnonce}
         onClose={() => { setModalAnnonce(false); setEditAnnonce(null) }}
@@ -229,7 +298,7 @@ export default function Annonces() {
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Catégorie *</label>
             <select {...register('categorie', { required: true })} className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none">
-              {CATEGORIES.map(c => <option key={c} value={c}>{CAT_LABELS[c]}</option>)}
+              {categories.map(c => <option key={c.slug} value={c.slug}>{c.label}</option>)}
             </select>
           </div>
           <div>
@@ -271,6 +340,64 @@ export default function Annonces() {
             Enregistrer
           </button>
         </form>
+      </Modal>
+
+      {/* Modal gestion des catégories */}
+      <Modal
+        isOpen={modalCats}
+        onClose={() => setModalCats(false)}
+        title="Gérer les catégories d'annonces"
+        size="md"
+      >
+        <div className="space-y-4">
+          {/* Liste des catégories actuelles */}
+          <div className="space-y-2 max-h-64 overflow-y-auto">
+            {loadingCats ? (
+              <div className="h-8 bg-gray-100 rounded animate-pulse" />
+            ) : categories.map(c => (
+              <div key={c.slug} className="flex items-center justify-between px-3 py-2 bg-gray-50 rounded-lg">
+                <div>
+                  <span className="text-sm font-medium text-gray-800">{c.label}</span>
+                  <span className="ml-2 text-xs text-gray-400">{c.slug}</span>
+                </div>
+                <button
+                  onClick={() => deleteCategorie(c.slug)}
+                  className="text-red-500 hover:text-red-700 p-1"
+                  title="Supprimer"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            ))}
+          </div>
+
+          {/* Ajouter une catégorie */}
+          <div className="border-t pt-4">
+            <p className="text-sm font-medium text-gray-700 mb-3">Ajouter une catégorie</p>
+            <div className="space-y-2">
+              <input
+                value={newCatLabel}
+                onChange={e => setNewCatLabel(e.target.value)}
+                placeholder="Nom affiché (ex: Évangélisation)"
+                className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none"
+              />
+              <input
+                value={newCatSlug}
+                onChange={e => setNewCatSlug(e.target.value)}
+                placeholder="Slug (auto-généré si vide, ex: evangelisation)"
+                className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none text-gray-500"
+              />
+              <button
+                onClick={addCategorie}
+                disabled={savingCat || !newCatLabel.trim()}
+                className="w-full text-white py-2 rounded-lg text-sm font-semibold disabled:opacity-40"
+                style={{ backgroundColor: '#8B1A2E' }}
+              >
+                {savingCat ? 'Enregistrement…' : 'Ajouter'}
+              </button>
+            </div>
+          </div>
+        </div>
       </Modal>
     </div>
   )

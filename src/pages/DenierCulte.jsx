@@ -53,6 +53,48 @@ export default function DenierCulte() {
   const loadCotisations = useCallback(async () => {
     setLoadingCot(true)
     setQueryError(null)
+
+    if (filtreStatut === 'non_paye') {
+      // Cas spécial : les utilisateurs sans cotisation n'ont pas de ligne dans la table.
+      // On charge tous les profils, on retire ceux qui ont payé ou sont en partiel.
+      const { data: payesData } = await supabase
+        .from('denier_culte')
+        .select('user_id')
+        .eq('annee', filtreAnnee)
+        .in('statut', ['paye', 'partiel'])
+
+      const payesIds = new Set((payesData || []).map(r => r.user_id))
+
+      const { data: profs, error } = await supabase
+        .from('profiles')
+        .select('id, nom, telephone')
+        .not('nom', 'is', null)
+        .neq('nom', '')
+        .order('nom')
+
+      if (error) { setQueryError(error.message); setLoadingCot(false); return }
+
+      const nonPayes = (profs || [])
+        .filter(p => !payesIds.has(p.id))
+        .map(p => ({
+          id: `np_${p.id}`,
+          user_id: p.id,
+          profiles: p,
+          annee: filtreAnnee,
+          statut: 'non_paye',
+          montant: 0,
+          date_paiement: null,
+          operateur_paiement: null,
+          profession: null,
+        }))
+
+      setCotisations(nonPayes)
+      setTotal(nonPayes.length)
+      setLoadingCot(false)
+      return
+    }
+
+    // Cas normal : lire directement denier_culte
     let query = supabase
       .from('denier_culte')
       .select('*', { count: 'exact' })
@@ -135,10 +177,21 @@ export default function DenierCulte() {
   // ── Marquer manuellement comme payé ─────────────────────────────
   const marquerPaye = async (row) => {
     if (!confirm(`Marquer la cotisation de ${row.profiles?.nom || 'cet utilisateur'} comme payée ?`)) return
-    await q(supabase.from('denier_culte').update({
-      statut: 'paye',
-      date_paiement: new Date().toISOString(),
-    }).eq('id', row.id))
+    if (String(row.id).startsWith('np_')) {
+      // Utilisateur sans ligne → insérer
+      await q(supabase.from('denier_culte').insert({
+        user_id: row.user_id,
+        annee: row.annee,
+        statut: 'paye',
+        date_paiement: new Date().toISOString(),
+        montant: 0,
+      }))
+    } else {
+      await q(supabase.from('denier_culte').update({
+        statut: 'paye',
+        date_paiement: new Date().toISOString(),
+      }).eq('id', row.id))
+    }
     showToast('Cotisation marquée payée')
     loadCotisations()
     loadStats()
@@ -343,6 +396,20 @@ export default function DenierCulte() {
                 className="flex items-center gap-1 bg-green-600 text-white px-2 py-1 rounded text-xs hover:bg-green-700"
               >
                 <Check size={12} /> Marquer payé
+              </button>
+            ),
+            !String(row.id).startsWith('np_') && (
+              <button
+                key="del"
+                onClick={async () => {
+                  if (!confirm('Supprimer cette cotisation ?')) return
+                  await q(supabase.from('denier_culte').delete().eq('id', row.id))
+                  showToast('Cotisation supprimée')
+                  loadCotisations(); loadStats()
+                }}
+                className="flex items-center gap-1 bg-red-50 text-red-600 px-2 py-1 rounded text-xs hover:bg-red-100"
+              >
+                <Trash2 size={12} /> Supprimer
               </button>
             ),
           ].filter(Boolean)}

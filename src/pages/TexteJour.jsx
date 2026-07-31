@@ -31,7 +31,7 @@ export default function TexteJour() {
       .order('date_lecture', { ascending: false })
       .range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1)
 
-    if (search) query = query.or(`titre.ilike.%${search}%,reference.ilike.%${search}%`)
+    if (search) query = query.ilike('titre', `%${search}%`)
 
     const { data, count } = await query
     setTextes(data || [])
@@ -47,7 +47,6 @@ export default function TexteJour() {
     reset({
       titre: t.titre,
       date_lecture: t.date_lecture ? t.date_lecture.split('T')[0] : '',
-      reference: t.reference || '',
       contenu: t.contenu || '',
       reflexion: t.reflexion || '',
       est_actif: t.est_actif !== false,
@@ -60,7 +59,6 @@ export default function TexteJour() {
       const payload = nfcPayload({
         titre: data.titre,
         date_lecture: data.date_lecture || null,
-        reference: data.reference || null,
         contenu: data.contenu || null,
         reflexion: data.reflexion || null,
         image_url: imageUrl || null,
@@ -96,14 +94,7 @@ export default function TexteJour() {
 
   const cols = [
     { key: 'date_lecture', label: 'Date', render: v => fmtDate(v) },
-    {
-      key: 'titre', label: 'Titre', render: (v, row) => (
-        <div>
-          <p className="font-medium text-gray-800">{v}</p>
-          {row.reference && <p className="text-xs text-gray-400">{row.reference}</p>}
-        </div>
-      )
-    },
+    { key: 'titre', label: 'Titre', render: v => <p className="font-medium text-gray-800">{v}</p> },
     {
       key: 'image_url', label: 'Image', render: v => v
         ? <img src={v} alt="" className="w-10 h-10 rounded object-cover border border-gray-200" />
@@ -176,10 +167,6 @@ export default function TexteJour() {
               <label className="block text-sm font-medium text-gray-700 mb-1">Date de lecture</label>
               <input type="date" {...register('date_lecture')} className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none" />
             </div>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Référence biblique</label>
-            <input {...register('reference')} placeholder="ex: Jean 3:16" className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none" />
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Texte biblique</label>

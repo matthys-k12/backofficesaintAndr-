@@ -12,6 +12,8 @@ const PAGE_SIZE = 20
 const CATEGORIES = ['initiation', 'mariage', 'enterrement']
 const STATUT_LABELS = { en_attente: 'En attente', validee: 'Validée', annulee: 'Annulée', tout: 'Tous' }
 
+function lastDayOf(y, m1) { return new Date(y, m1, 0).getDate() }
+
 function getPeriodRange(periode) {
   const now = new Date()
   const y = now.getFullYear(), m = now.getMonth()
@@ -20,12 +22,19 @@ function getPeriodRange(periode) {
     const sun = new Date(mon); sun.setDate(mon.getDate() + 6)
     return { start: mon.toISOString().slice(0,10), end: sun.toISOString().slice(0,10) }
   }
-  if (periode === 'mois') return { start: `${y}-${String(m+1).padStart(2,'0')}-01`, end: `${y}-${String(m+1).padStart(2,'0')}-31` }
-  if (periode === 'mois_dernier') {
-    const pm = m === 0 ? 12 : m, py = m === 0 ? y - 1 : y
-    return { start: `${py}-${String(pm).padStart(2,'0')}-01`, end: `${py}-${String(pm).padStart(2,'0')}-31` }
+  if (periode === 'mois') {
+    const mm = String(m + 1).padStart(2, '0')
+    return { start: `${y}-${mm}-01`, end: `${y}-${mm}-${String(lastDayOf(y, m + 1)).padStart(2, '0')}` }
   }
-  if (periode === 'trimestre') return { start: `${y}-${String(Math.floor(m/3)*3+1).padStart(2,'0')}-01`, end: `${y}-12-31` }
+  if (periode === 'mois_dernier') {
+    const lm = m === 0 ? 12 : m, ly = m === 0 ? y - 1 : y
+    const mm = String(lm).padStart(2, '0')
+    return { start: `${ly}-${mm}-01`, end: `${ly}-${mm}-${String(lastDayOf(ly, lm)).padStart(2, '0')}` }
+  }
+  if (periode === 'trimestre') {
+    const qs = Math.floor(m / 3) * 3, qe = qs + 2
+    return { start: `${y}-${String(qs + 1).padStart(2, '0')}-01`, end: `${y}-${String(qe + 1).padStart(2, '0')}-${String(lastDayOf(y, qe + 1)).padStart(2, '0')}` }
+  }
   return null
 }
 
@@ -51,7 +60,7 @@ export default function Casuels() {
   const showToast = (msg, type = 'success') => setToast({ msg, type })
 
   const loadTarifs = async () => {
-    const { data } = await supabase.from('casuel_tarifs').select('*').order('categorie').order('montant')
+    const { data } = await supabase.from('casuel_tarifs').select('*').eq('est_actif', true).order('categorie').order('montant')
     setTarifs(data || [])
     setLoading(false)
   }
