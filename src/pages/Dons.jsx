@@ -54,13 +54,29 @@ export default function Dons() {
       setLoadingD(false); return
     }
 
-    const ids = [...new Set((data || []).map(r => r.user_id).filter(Boolean))]
-    let profsMap = {}
-    if (ids.length > 0) {
-      const { data: profs } = await supabase.from('profiles').select('id, nom, telephone').in('id', ids)
-      ;(profs || []).forEach(p => { profsMap[p.id] = p })
-    }
-    setDons((data || []).map(r => ({ ...r, profiles: profsMap[r.user_id] || null })))
+    // Charger profils et types de campagnes en parallèle
+    const userIds = [...new Set((data || []).map(r => r.user_id).filter(Boolean))]
+    const campIds = [...new Set((data || []).map(r => r.campagne_id).filter(Boolean))]
+
+    const [profsRes, campsRes] = await Promise.all([
+      userIds.length > 0
+        ? supabase.from('profiles').select('id, nom, telephone').in('id', userIds)
+        : Promise.resolve({ data: [] }),
+      campIds.length > 0
+        ? supabase.from('don_campagnes').select('id, type').in('id', campIds)
+        : Promise.resolve({ data: [] }),
+    ])
+
+    const profsMap = {}
+    ;(profsRes.data || []).forEach(p => { profsMap[p.id] = p })
+    const campTypeMap = {}
+    ;(campsRes.data || []).forEach(c => { campTypeMap[c.id] = c.type })
+
+    setDons((data || []).map(r => ({
+      ...r,
+      profiles: profsMap[r.user_id] || null,
+      _campagne_type: campTypeMap[r.campagne_id] || null,
+    })))
     setTotal(count || 0)
     setLoadingD(false)
   }, [page, filtreStatut, filtreCampagne])
@@ -76,6 +92,7 @@ export default function Dons() {
       description: c.description,
       objectif: c.objectif,
       date_fin: c.date_fin ? c.date_fin.split('T')[0] : '',
+      type: c.type || 'categorie',
     })
     setModalCampagne(true)
   }
@@ -87,6 +104,7 @@ export default function Dons() {
         description: data.description || null,
         objectif: data.objectif ? parseInt(data.objectif) : 0,
         image_url: imageUrl || null,
+        type: data.type || 'categorie',
       }
       if (editCampagne) {
         await q(supabase.from('don_campagnes').update(payload).eq('id', editCampagne.id))
@@ -100,6 +118,7 @@ export default function Dons() {
   }
 
   const toggleActif = async (c) => {
+    if (c.type === 'app') return
     try {
       await q(supabase.from('don_campagnes').update({ est_actif: !c.est_actif }).eq('id', c.id))
       showToast(c.est_actif ? 'Campagne désactivée' : 'Campagne activée')
@@ -130,19 +149,57 @@ export default function Dons() {
 
   const STATUT_LABELS = { en_attente: 'En attente', valide: 'Validé', validee: 'Validé', annulee: 'Annulé', tout: 'Tous' }
 
+  const isAppDon = (row) => row._campagne_type === 'app'
+
+  // Normal : St André = montant - frais_op - frais_admin ; Web Ivoire = frais_admin (1%) ; Opér. = frais_op (1%)
+  // App    : St André = 0 ; Web Ivoire = montant - frais_op ; Opér. = frais_op (1%)
+  const calcRevenuStAndre = (row) => {
+    if (isAppDon(row)) return 0
+    const fraisOper = row.frais_mobile_money || 0
+    const fraisAdmin = row.frais_plateforme || 0
+    return Math.max(0, (row.montant || 0) - fraisOper - fraisAdmin)
+  }
+
+  const calcRevenuWebIvoire = (row) => {
+    const fraisOper = row.frais_mobile_money || 0
+    if (isAppDon(row)) return Math.max(0, (row.montant || 0) - fraisOper)
+    return row.frais_plateforme || 0
+  }
+
   const colsDons = [
     {
-      key: 'profiles', label: 'Donateur',
-      render: (v, row) => {
-        const nom = v?.nom
-        if (nom) return <span className="font-medium text-gray-800">{nom}</span>
-        if (v?.telephone) return <span className="text-gray-600 text-xs">{v.telephone}</span>
-        return <span className="text-gray-400 italic text-xs">Anonyme</span>
+      key: 'profiles', label: 'Utilisateur',
+      render: (v) => (
+        <div className="leading-tight">
+          <div className="font-medium text-gray-800 text-sm">{v?.nom || <span className="text-gray-400 italic text-xs">Anonyme</span>}</div>
+          {v?.telephone && <div className="text-xs text-gray-400">{v.telephone}</div>}
+        </div>
+      )
+    },
+    {
+      key: 'transaction_id', label: 'N° Transaction',
+      render: v => v ? <span className="text-xs font-mono text-gray-600">{v}</span> : <span className="text-gray-300">—</span>
+    },
+    { key: 'operateur_paiement', label: 'Opérateur', render: v => v || '—' },
+    { key: 'montant', label: 'Montant', render: v => <span className="font-semibold text-gray-800">{fmtMontant(v)}</span> },
+    {
+      key: '_revenu_st_andre', label: 'Revenu St André',
+      render: (_, row) => {
+        const v = calcRevenuStAndre(row)
+        return <span className={`font-semibold ${v > 0 ? 'text-green-700' : 'text-gray-300'}`}>{fmtMontant(v)}</span>
       }
     },
-    { key: 'campagne_titre', label: 'Campagne', render: v => v || <span className="text-gray-400 italic text-xs">Don libre</span> },
-    { key: 'montant', label: 'Montant', render: v => <span className="font-semibold text-green-700">{fmtMontant(v)}</span> },
-    { key: 'operateur_paiement', label: 'Opérateur' },
+    {
+      key: '_revenu_web_ivoire', label: 'Revenu Web Ivoire',
+      render: (_, row) => {
+        const v = calcRevenuWebIvoire(row)
+        return <span className={`font-semibold ${v > 0 ? 'text-indigo-700' : 'text-gray-300'}`}>{fmtMontant(v)}</span>
+      }
+    },
+    {
+      key: 'frais_mobile_money', label: 'Frais opér.',
+      render: v => <span className="text-xs text-gray-500">{fmtMontant(v || 0)}</span>
+    },
     { key: 'statut', label: 'Statut', render: v => <Badge label={STATUT_LABELS[v] || v} value={v} /> },
     { key: 'created_at', label: 'Date', render: v => fmtDate(v) },
   ]
@@ -184,18 +241,28 @@ export default function Dons() {
                     <img src={c.image_url} alt={c.titre} className="w-full h-36 object-cover" />
                   )}
                   <div className="p-4">
+                    {c.type === 'app' && (
+                      <div className="flex items-center gap-1.5 text-xs text-indigo-700 bg-indigo-50 border border-indigo-100 rounded-lg px-3 py-1.5 mb-3">
+                        <span>💻</span>
+                        <span className="font-medium">Bénéficiaire : Web Ivoire Média</span>
+                        <span className="text-indigo-400 ml-1">— 0% frais admin · frais opérateur uniquement</span>
+                      </div>
+                    )}
                     <div className="flex items-start justify-between mb-2">
                       <h3 className="font-semibold text-gray-900 text-sm">{c.titre}</h3>
-                      <button
-                        onClick={() => toggleActif(c)}
-                        className="w-8 h-4 rounded-full transition-colors relative shrink-0 ml-2"
-                        style={{ backgroundColor: c.est_actif ? '#16a34a' : '#d1d5db' }}
-                      >
-                        <div
-                          className="w-3 h-3 bg-white rounded-full absolute top-0.5 transition-all"
-                          style={{ left: c.est_actif ? '16px' : '2px' }}
-                        />
-                      </button>
+                      {c.type === 'app'
+                        ? <span className="text-xs text-indigo-600 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-full font-medium shrink-0 ml-2 select-none" title="Campagne permanente — ne peut pas être désactivée">🔒 Permanent</span>
+                        : <button
+                            onClick={() => toggleActif(c)}
+                            className="w-8 h-4 rounded-full transition-colors relative shrink-0 ml-2"
+                            style={{ backgroundColor: c.est_actif ? '#16a34a' : '#d1d5db' }}
+                          >
+                            <div
+                              className="w-3 h-3 bg-white rounded-full absolute top-0.5 transition-all"
+                              style={{ left: c.est_actif ? '16px' : '2px' }}
+                            />
+                          </button>
+                      }
                     </div>
                     {c.description && (
                       <p className="text-xs text-gray-500 mb-3 line-clamp-2">{c.description}</p>
@@ -298,6 +365,17 @@ export default function Dons() {
             <input {...register('titre', { required: true })} className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none" />
           </div>
           <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Type *</label>
+            <select {...register('type', { required: true })} defaultValue="categorie" className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none bg-white">
+              <option value="categorie">Catégorie (don général)</option>
+              <option value="construction">Construction</option>
+              <option value="libre">Don libre</option>
+              <option value="seminaire">Séminaire</option>
+              <option value="secours">Secours</option>
+              <option value="app">Soutien application (permanent)</option>
+            </select>
+          </div>
+          <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
             <textarea {...register('description')} rows={3} className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none resize-none" />
           </div>
@@ -345,25 +423,60 @@ export default function Dons() {
 
       {/* Modal détail don */}
       <Modal isOpen={!!modalDetail} onClose={() => setModalDetail(null)} title="Détails du don" size="sm">
-        {modalDetail && (
-          <div className="space-y-3 text-sm">
-            {[
-              ['Donateur', modalDetail.profiles?.nom || modalDetail.profiles?.telephone],
-              ['Campagne', modalDetail.campagne_titre || 'Don libre'],
-              ['Montant', fmtMontant(modalDetail.montant)],
-              ['Frais', fmtMontant(modalDetail.frais_plateforme)],
-              ['Opérateur', modalDetail.operateur_paiement],
-              ['N° transaction', modalDetail.transaction_id],
-              ['Statut', modalDetail.statut],
-              ['Date', fmtDate(modalDetail.created_at)],
-            ].map(([label, val]) => val ? (
-              <div key={label} className="flex gap-4">
-                <span className="text-gray-500 w-36 shrink-0">{label}</span>
-                <span className="text-gray-900 font-medium">{val}</span>
+        {modalDetail && (() => {
+          const estAppDon = isAppDon(modalDetail)
+          return (
+            <div className="space-y-3 text-sm">
+              {/* Bandeau bénéficiaire */}
+              <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium border ${estAppDon ? 'bg-indigo-50 border-indigo-200 text-indigo-700' : 'bg-red-50 border-red-200 text-red-800'}`}>
+                <span>{estAppDon ? '💻' : '⛪'}</span>
+                <span>Bénéficiaire : {estAppDon ? 'Web Ivoire Média' : 'Cathédrale Saint André'}</span>
               </div>
-            ) : null)}
-          </div>
-        )}
+
+              {[
+                ['Donateur', modalDetail.profiles?.nom || modalDetail.profiles?.telephone],
+                ['Téléphone', modalDetail.profiles?.telephone],
+                ['Campagne', modalDetail.campagne_titre || 'Don libre'],
+                ['Montant brut', fmtMontant(modalDetail.montant)],
+                ['Frais opérateur', fmtMontant(modalDetail.frais_mobile_money || 0)],
+                ['Frais admin', estAppDon ? '0 FCFA' : fmtMontant(modalDetail.frais_plateforme || 0)],
+              ].map(([label, val]) => val != null ? (
+                <div key={label} className="flex gap-4">
+                  <span className="text-gray-500 w-36 shrink-0">{label}</span>
+                  <span className="text-gray-900 font-medium">{val}</span>
+                </div>
+              ) : null)}
+
+              {/* Répartition nette */}
+              <div className="border-t border-gray-100 pt-3 space-y-2">
+                <div className="flex gap-4">
+                  <span className="text-gray-500 w-36 shrink-0">→ Revenu St André</span>
+                  <span className={`font-semibold ${estAppDon ? 'text-gray-300' : 'text-green-700'}`}>
+                    {fmtMontant(calcRevenuStAndre(modalDetail))}
+                  </span>
+                </div>
+                <div className="flex gap-4">
+                  <span className="text-gray-500 w-36 shrink-0">→ Revenu Web Ivoire</span>
+                  <span className={`font-semibold ${estAppDon ? 'text-indigo-700' : 'text-gray-300'}`}>
+                    {fmtMontant(calcRevenuWebIvoire(modalDetail))}
+                  </span>
+                </div>
+              </div>
+
+              {[
+                ['Opérateur', modalDetail.operateur_paiement],
+                ['N° transaction', modalDetail.transaction_id],
+                ['Statut', modalDetail.statut],
+                ['Date', fmtDate(modalDetail.created_at)],
+              ].map(([label, val]) => val ? (
+                <div key={label} className="flex gap-4">
+                  <span className="text-gray-500 w-36 shrink-0">{label}</span>
+                  <span className="text-gray-900 font-medium">{val}</span>
+                </div>
+              ) : null)}
+            </div>
+          )
+        })()}
       </Modal>
     </div>
   )

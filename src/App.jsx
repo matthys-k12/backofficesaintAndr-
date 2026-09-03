@@ -21,6 +21,8 @@ import Facturation from './pages/Facturation'
 import Contact from './pages/Contact'
 import Partage from './pages/Partage'
 import Notifications from './pages/Notifications'
+import SaviezVous from './pages/SaviezVous'
+import QuizBiblique from './pages/QuizBiblique'
 
 function PermissionRoute({ perm, adminOnly, children }) {
   const { isSuperAdmin, hasPermission, permissions } = useAuth()
@@ -70,7 +72,9 @@ export default function App() {
               <Route path="facturation"  element={<PermissionRoute perm="facturation"> <Facturation /> </PermissionRoute>} />
               <Route path="utilisateurs" element={<PermissionRoute perm="utilisateurs"><Utilisateurs /></PermissionRoute>} />
               <Route path="contact"      element={<PermissionRoute perm="contact">     <Contact />     </PermissionRoute>} />
-              <Route path="notifications" element={<PermissionRoute perm="notifications"><Notifications /></PermissionRoute>} />
+              <Route path="notifications"  element={<PermissionRoute perm="notifications"><Notifications /></PermissionRoute>} />
+              <Route path="saviez-vous"   element={<PermissionRoute perm="annonces">   <SaviezVous />  </PermissionRoute>} />
+              <Route path="quiz-biblique" element={<PermissionRoute perm="annonces">   <QuizBiblique /></PermissionRoute>} />
               <Route path="parametres"   element={<PermissionRoute adminOnly>          <Parametres />  </PermissionRoute>} />
             </Route>
           </Route>

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Trash2, Wifi, WifiOff, Users, ImagePlus, Film, X, Eye, ExternalLink, Edit2 } from 'lucide-react'
+import { Trash2, Wifi, WifiOff, Users, ImagePlus, Film, X, Eye, ExternalLink, Edit2, Plus } from 'lucide-react'
 import { supabase, q } from '../lib/supabase'
 import DataTable from '../components/DataTable'
 import Toast from '../components/Toast'
@@ -19,7 +19,7 @@ const FORM_INIT = {
   video_name: '',
   video_url_existing: '',
   lieu: '',
-  prix: 0,
+  tarifs: [{ nom: '', prix: '' }],
   nombre_places: '',
   date_debut: '',
   date_fin: '',
@@ -54,6 +54,8 @@ export default function Evenements() {
 
   const [toast, setToast] = useState(null)
   const [modalEvenement, setModalEvenement] = useState(null)
+  const [modalTarifs, setModalTarifs] = useState(null)   // tarifs du modal detail
+  const [loadingModalTarifs, setLoadingModalTarifs] = useState(false)
   const [modalInscrit, setModalInscrit] = useState(null)
   const imageInputRef = useRef(null)
   const videoInputRef = useRef(null)
@@ -66,7 +68,7 @@ export default function Evenements() {
     try {
       let query = supabase
         .from('evenements')
-        .select('*')
+        .select('*, evenement_tarifs(id, nom, prix)')
         .order('created_at', { ascending: false })
 
       if (filtreActif === 'en_ligne') query = query.eq('est_actif', true)
@@ -121,7 +123,24 @@ export default function Evenements() {
     if (videoInputRef.current) videoInputRef.current.value = ''
   }
 
-  const openEdit = (ev) => {
+  const openEdit = async (ev) => {
+    // Charger les tarifs existants
+    let tarifs = []
+    try {
+      const { data } = await supabase
+        .from('evenement_tarifs')
+        .select('nom, prix')
+        .eq('evenement_id', ev.id)
+        .order('created_at')
+      tarifs = (data || []).map(t => ({ nom: t.nom, prix: String(t.prix) }))
+    } catch (_) {}
+
+    // Rétrocompat : ancien évènement avec prix unique
+    if (tarifs.length === 0 && (ev.prix ?? 0) > 0) {
+      tarifs = [{ nom: 'Ticket', prix: String(ev.prix) }]
+    }
+    if (tarifs.length === 0) tarifs = [{ nom: '', prix: '' }]
+
     setForm({
       ...FORM_INIT,
       titre:              ev.titre || '',
@@ -131,7 +150,7 @@ export default function Evenements() {
       video_name:         ev.video_url ? 'Vidéo existante' : '',
       video_url_existing: ev.video_url || '',
       lieu:               ev.lieu || '',
-      prix:               ev.prix ?? 0,
+      tarifs,
       nombre_places:      ev.nombre_places ?? '',
       date_debut:         ev.date_debut || '',
       date_fin:           ev.date_fin || '',
@@ -152,37 +171,55 @@ export default function Evenements() {
     }
     setSaving(true)
     try {
-      // Image : nouvelle upload OU url existante
       let image_url = form.image_url_existing || null
       if (form.image_file) image_url = await uploadToStorage(form.image_file, 'images')
 
-      // Vidéo : nouvelle upload OU url existante
       let video_url = form.video_url_existing || null
       if (form.video_file) video_url = await uploadToStorage(form.video_file, 'videos')
 
+      const validTarifs = form.tarifs.filter(t => t.nom.trim())
+      const prixMin = validTarifs.length > 0
+        ? Math.min(...validTarifs.map(t => Number(t.prix) || 0))
+        : 0
+
       const payload = {
-        titre:         form.titre.trim(),
-        description:   form.description.trim(),
+        titre:           form.titre.trim(),
+        description:     form.description.trim(),
         image_url,
         video_url,
-        lieu:          form.lieu.trim() || null,
-        prix:          Number(form.prix) || 0,
-        nombre_places: form.nombre_places !== '' ? Number(form.nombre_places) : null,
-        date_debut:    form.date_debut || null,
-        date_fin:      form.date_fin || null,
+        lieu:            form.lieu.trim() || null,
+        prix:            prixMin,
+        nombre_places:   form.nombre_places !== '' ? Number(form.nombre_places) : null,
+        date_debut:      form.date_debut || null,
+        date_fin:        form.date_fin || null,
         date_evenement:  form.date_evenement || null,
         heure_evenement: form.heure_evenement || null,
-        est_actif:     form.est_actif,
+        est_actif:       form.est_actif,
       }
 
+      let eventId = editId
       if (editId) {
         const { error } = await supabase.from('evenements').update(payload).eq('id', editId)
         if (error) throw error
         showToast('Évènement mis à jour')
       } else {
-        const { error } = await supabase.from('evenements').insert(payload)
+        const { data: inserted, error } = await supabase.from('evenements').insert(payload).select('id').single()
         if (error) throw error
+        eventId = inserted.id
         showToast('Évènement ajouté avec succès')
+      }
+
+      // Sync tarifs : supprimer les anciens, insérer les nouveaux
+      await supabase.from('evenement_tarifs').delete().eq('evenement_id', eventId)
+      if (validTarifs.length > 0) {
+        const { error: tErr } = await supabase.from('evenement_tarifs').insert(
+          validTarifs.map(t => ({
+            evenement_id: eventId,
+            nom:          t.nom.trim(),
+            prix:         Number(t.prix) || 0,
+          }))
+        )
+        if (tErr) throw tErr
       }
 
       resetForm()
@@ -198,6 +235,19 @@ export default function Evenements() {
     const val = e.target.type === 'checkbox' ? e.target.checked : e.target.value
     setForm(prev => ({ ...prev, [field]: val }))
   }
+
+  // ── Gestion dynamique des tarifs ────────────────────────────────────────
+  const addTarif = () =>
+    setForm(prev => ({ ...prev, tarifs: [...prev.tarifs, { nom: '', prix: '' }] }))
+
+  const removeTarif = (i) =>
+    setForm(prev => ({ ...prev, tarifs: prev.tarifs.filter((_, idx) => idx !== i) }))
+
+  const setTarif = (i, field, value) =>
+    setForm(prev => ({
+      ...prev,
+      tarifs: prev.tarifs.map((t, idx) => idx === i ? { ...t, [field]: value } : t),
+    }))
 
   const handleImageChange = (e) => {
     const file = e.target.files?.[0]
@@ -256,6 +306,40 @@ export default function Evenements() {
     }
   }
 
+  // ── Ouvrir modal détail (et charger tarifs) ──────────────────────────────
+  const openModalEvenement = async (row) => {
+    setModalEvenement(row)
+    setModalTarifs(row.evenement_tarifs || null)
+    if (!row.evenement_tarifs) {
+      setLoadingModalTarifs(true)
+      try {
+        const { data } = await supabase
+          .from('evenement_tarifs')
+          .select('nom, prix')
+          .eq('evenement_id', row.id)
+          .order('prix')
+        setModalTarifs(data || [])
+      } catch (_) {
+        setModalTarifs([])
+      } finally {
+        setLoadingModalTarifs(false)
+      }
+    }
+  }
+
+  // ── Helper affichage prix ─────────────────────────────────────────────────
+  const displayTarifs = (row) => {
+    const tarifs = row.evenement_tarifs || []
+    if (tarifs.length === 0) {
+      return row.prix === 0 || row.prix === null ? 'Gratuit' : fmtMontant(row.prix)
+    }
+    const allFree = tarifs.every(t => t.prix === 0)
+    if (allFree) return 'Gratuit'
+    const min = Math.min(...tarifs.map(t => t.prix))
+    if (tarifs.length === 1) return fmtMontant(min)
+    return `${tarifs.length} tarifs · dès ${fmtMontant(min)}`
+  }
+
   // ── Colonnes table historique ────────────────────────────────────────────
   const colsEvenements = [
     {
@@ -265,7 +349,7 @@ export default function Evenements() {
     },
     {
       key: 'date_evenement',
-      label: "Date évènement",
+      label: 'Date évènement',
       render: (v) => <span className="text-sm text-gray-700">{v ? fmtDate(v) : <span className="text-gray-400">—</span>}</span>,
     },
     {
@@ -279,12 +363,10 @@ export default function Evenements() {
       render: (v) => <span className="text-xs text-gray-500">{v ? fmtDate(v) : '—'}</span>,
     },
     {
-      key: 'prix',
-      label: 'Prix',
-      render: (v) => (
-        <span className="text-sm text-gray-700">
-          {v === 0 || v === null ? 'Gratuit' : fmtMontant(v)}
-        </span>
+      key: '_tarifs',
+      label: 'Tarifs',
+      render: (_, row) => (
+        <span className="text-sm text-gray-700">{displayTarifs(row)}</span>
       ),
     },
     {
@@ -318,12 +400,11 @@ export default function Evenements() {
       ),
     },
     {
-      key: '_titre_ev',
-      label: 'Titre Évènement',
-      render: (_, row) => {
-        const ev = evenements.find(e => String(e.id) === String(row.evenement_id))
-        return <span className="text-sm text-gray-700">{ev?.titre || '—'}</span>
-      },
+      key: 'tarif_nom',
+      label: 'Tarif',
+      render: (v) => (
+        <span className="text-sm text-gray-700">{v || '—'}</span>
+      ),
     },
     {
       key: 'montant_paye',
@@ -359,7 +440,7 @@ export default function Evenements() {
 
         <div className="bg-white rounded-xl shadow p-6">
           <form onSubmit={handleSubmit} className="space-y-4">
-            {/* Titre + Description */}
+            {/* Titre + Lieu */}
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Titre *</label>
@@ -396,75 +477,42 @@ export default function Evenements() {
               />
             </div>
 
-            {/* Médias — upload Supabase Storage */}
+            {/* Médias */}
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              {/* Image */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Image de l'évènement *{' '}
                   <span className="text-xs font-normal text-gray-400">max 5 MB</span>
                 </label>
-                <input
-                  ref={imageInputRef}
-                  type="file"
-                  accept="image/*"
-                  onChange={handleImageChange}
-                  className="hidden"
-                  id="image-upload"
-                />
+                <input ref={imageInputRef} type="file" accept="image/*" onChange={handleImageChange} className="hidden" id="image-upload" />
                 {form.image_preview ? (
                   <div className="relative rounded-lg overflow-hidden border border-gray-200 h-32">
-                    <img
-                      src={form.image_preview}
-                      alt="Aperçu"
-                      className="w-full h-full object-cover"
-                    />
-                    <button
-                      type="button"
-                      onClick={clearImage}
-                      className="absolute top-1.5 right-1.5 bg-white rounded-full p-0.5 shadow"
-                    >
+                    <img src={form.image_preview} alt="Aperçu" className="w-full h-full object-cover" />
+                    <button type="button" onClick={clearImage} className="absolute top-1.5 right-1.5 bg-white rounded-full p-0.5 shadow">
                       <X size={14} className="text-gray-700" />
                     </button>
                   </div>
                 ) : (
-                  <label
-                    htmlFor="image-upload"
-                    className="flex flex-col items-center justify-center gap-2 h-32 rounded-lg border-2 border-dashed border-gray-200 cursor-pointer hover:border-gray-400 transition-colors bg-gray-50"
-                  >
+                  <label htmlFor="image-upload" className="flex flex-col items-center justify-center gap-2 h-32 rounded-lg border-2 border-dashed border-gray-200 cursor-pointer hover:border-gray-400 transition-colors bg-gray-50">
                     <ImagePlus size={22} className="text-gray-400" />
                     <span className="text-xs text-gray-400">Choisir une image</span>
                   </label>
                 )}
               </div>
 
-              {/* Vidéo */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Vidéo de l'évènement{' '}
-                  <span className="text-xs font-normal text-gray-400">optionnelle – max 50 MB</span>
+                  Vidéo{' '}<span className="text-xs font-normal text-gray-400">optionnelle – max 50 MB</span>
                 </label>
-                <input
-                  ref={videoInputRef}
-                  type="file"
-                  accept="video/*"
-                  onChange={handleVideoChange}
-                  className="hidden"
-                  id="video-upload"
-                />
+                <input ref={videoInputRef} type="file" accept="video/*" onChange={handleVideoChange} className="hidden" id="video-upload" />
                 {form.video_name ? (
                   <div className="flex items-center gap-2 h-32 rounded-lg border border-gray-200 bg-gray-50 px-4">
                     <Film size={20} className="text-gray-400 shrink-0" />
                     <span className="text-xs text-gray-600 truncate flex-1">{form.video_name}</span>
-                    <button type="button" onClick={clearVideo}>
-                      <X size={14} className="text-gray-500" />
-                    </button>
+                    <button type="button" onClick={clearVideo}><X size={14} className="text-gray-500" /></button>
                   </div>
                 ) : (
-                  <label
-                    htmlFor="video-upload"
-                    className="flex flex-col items-center justify-center gap-2 h-32 rounded-lg border-2 border-dashed border-gray-200 cursor-pointer hover:border-gray-400 transition-colors bg-gray-50"
-                  >
+                  <label htmlFor="video-upload" className="flex flex-col items-center justify-center gap-2 h-32 rounded-lg border-2 border-dashed border-gray-200 cursor-pointer hover:border-gray-400 transition-colors bg-gray-50">
                     <Film size={22} className="text-gray-400" />
                     <span className="text-xs text-gray-400">Choisir une vidéo</span>
                   </label>
@@ -472,18 +520,70 @@ export default function Evenements() {
               </div>
             </div>
 
-            {/* Prix + Places */}
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Prix (0 = gratuit)</label>
-                <input
-                  type="number"
-                  min={0}
-                  value={form.prix}
-                  onChange={set('prix')}
-                  className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:border-gray-400"
-                />
+            {/* ── Tarifs ────────────────────────────────────────────────────── */}
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <label className="block text-sm font-medium text-gray-700">
+                  Tarifs des billets
+                  <span className="text-xs font-normal text-gray-400 ml-1">(laisser vide = entrée gratuite)</span>
+                </label>
+                <button
+                  type="button"
+                  onClick={addTarif}
+                  className="flex items-center gap-1 text-xs text-white px-2.5 py-1.5 rounded-lg"
+                  style={{ backgroundColor: '#8B1A2E' }}
+                >
+                  <Plus size={12} /> Ajouter un tarif
+                </button>
               </div>
+
+              <div className="space-y-2">
+                {form.tarifs.map((t, i) => (
+                  <div key={i} className="flex gap-2 items-center">
+                    <input
+                      type="text"
+                      value={t.nom}
+                      onChange={e => setTarif(i, 'nom', e.target.value)}
+                      placeholder="Nom du tarif (ex : Adulte, VIP, Enfant…)"
+                      className="flex-1 px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:border-gray-400"
+                    />
+                    <div className="relative w-40 shrink-0">
+                      <input
+                        type="number"
+                        min={0}
+                        value={t.prix}
+                        onChange={e => setTarif(i, 'prix', e.target.value)}
+                        placeholder="0"
+                        className="w-full px-3 py-2 pr-14 rounded-lg border border-gray-200 text-sm focus:outline-none focus:border-gray-400"
+                      />
+                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-400 pointer-events-none">FCFA</span>
+                    </div>
+                    {form.tarifs.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => removeTarif(i)}
+                        className="p-2 rounded-lg text-red-400 hover:bg-red-50 transition-colors"
+                      >
+                        <X size={14} />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {form.tarifs.some(t => t.nom.trim()) && (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {form.tarifs.filter(t => t.nom.trim()).map((t, i) => (
+                    <span key={i} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-700">
+                      {t.nom} — {Number(t.prix) > 0 ? fmtMontant(Number(t.prix)) : 'Gratuit'}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Places */}
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Nombre de places max <span className="text-gray-400 font-normal">(vide = illimité)</span>
@@ -503,70 +603,46 @@ export default function Evenements() {
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Début de parution *</label>
-                <input
-                  type="date"
-                  required
-                  value={form.date_debut}
-                  onChange={set('date_debut')}
-                  className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:border-gray-400"
-                />
+                <input type="date" required value={form.date_debut} onChange={set('date_debut')}
+                  className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:border-gray-400" />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Fin de parution</label>
-                <input
-                  type="date"
-                  value={form.date_fin}
-                  onChange={set('date_fin')}
-                  className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:border-gray-400"
-                />
+                <input type="date" value={form.date_fin} onChange={set('date_fin')}
+                  className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:border-gray-400" />
               </div>
             </div>
 
-            {/* Date & Heure réelles de l'évènement */}
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Date de l'évènement <span className="text-gray-400 font-normal">(optionnel)</span>
                 </label>
-                <input
-                  type="date"
-                  value={form.date_evenement}
-                  onChange={set('date_evenement')}
-                  className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:border-gray-400"
-                />
+                <input type="date" value={form.date_evenement} onChange={set('date_evenement')}
+                  className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:border-gray-400" />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Heure de l'évènement <span className="text-gray-400 font-normal">(optionnel)</span>
                 </label>
-                <input
-                  type="time"
-                  value={form.heure_evenement}
-                  onChange={set('heure_evenement')}
-                  className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:border-gray-400"
-                />
+                <input type="time" value={form.heure_evenement} onChange={set('heure_evenement')}
+                  className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:border-gray-400" />
               </div>
             </div>
 
             {/* Checkbox + bouton */}
             <div className="flex items-center justify-between pt-2">
               <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={form.est_actif}
-                  onChange={set('est_actif')}
-                  className="rounded"
-                />
+                <input type="checkbox" checked={form.est_actif} onChange={set('est_actif')} className="rounded" />
                 <span>Mettre en ligne</span>
               </label>
-
               <button
                 type="submit"
                 disabled={saving}
                 className="text-white px-6 py-2.5 rounded-lg text-sm font-semibold disabled:opacity-50 transition-opacity"
                 style={{ backgroundColor: '#8B1A2E' }}
               >
-                {saving ? 'Enregistrement…' : editId ? "Mettre à jour" : "Ajouter l'évènement"}
+                {saving ? 'Enregistrement…' : editId ? 'Mettre à jour' : "Ajouter l'évènement"}
               </button>
             </div>
           </form>
@@ -579,7 +655,6 @@ export default function Evenements() {
           <h2 className="text-xl font-bold text-gray-900" style={{ fontFamily: 'Georgia, serif' }}>
             Historique des évènements
           </h2>
-
           <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
             {[
               { value: 'tout', label: 'Tous' },
@@ -607,46 +682,26 @@ export default function Evenements() {
           data={evenements}
           loading={loadingEvenements}
           actions={(row) => [
-            <button
-              key="edit"
-              onClick={() => openEdit(row)}
-              className="flex items-center gap-1 border border-blue-200 text-blue-700 px-2 py-1 rounded text-xs hover:bg-blue-50"
-            >
+            <button key="edit" onClick={() => openEdit(row)}
+              className="flex items-center gap-1 border border-blue-200 text-blue-700 px-2 py-1 rounded text-xs hover:bg-blue-50">
               <Edit2 size={12} /> Modifier
             </button>,
-            <button
-              key="detail"
-              onClick={() => setModalEvenement(row)}
-              className="flex items-center gap-1 border border-gray-200 text-gray-600 px-2 py-1 rounded text-xs hover:bg-gray-50"
-            >
+            <button key="detail" onClick={() => openModalEvenement(row)}
+              className="flex items-center gap-1 border border-gray-200 text-gray-600 px-2 py-1 rounded text-xs hover:bg-gray-50">
               <Eye size={12} /> Détails
             </button>,
             (row.image_url || row.video_url) && (
-              <a
-                key="media"
-                href={row.video_url || row.image_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-1 border border-gray-200 text-gray-600 px-2 py-1 rounded text-xs hover:bg-gray-50"
-              >
+              <a key="media" href={row.video_url || row.image_url} target="_blank" rel="noopener noreferrer"
+                className="flex items-center gap-1 border border-gray-200 text-gray-600 px-2 py-1 rounded text-xs hover:bg-gray-50">
                 <ExternalLink size={12} /> Voir
               </a>
             ),
-            <button
-              key="toggle"
-              onClick={() => toggleActif(row)}
-              className="flex items-center gap-1 border border-gray-200 text-gray-600 px-2 py-1 rounded text-xs hover:bg-gray-50"
-            >
-              {row.est_actif
-                ? <><WifiOff size={12} /> Hors ligne</>
-                : <><Wifi size={12} /> En ligne</>
-              }
+            <button key="toggle" onClick={() => toggleActif(row)}
+              className="flex items-center gap-1 border border-gray-200 text-gray-600 px-2 py-1 rounded text-xs hover:bg-gray-50">
+              {row.est_actif ? <><WifiOff size={12} /> Hors ligne</> : <><Wifi size={12} /> En ligne</>}
             </button>,
-            <button
-              key="del"
-              onClick={() => deleteEvenement(row.id)}
-              className="flex items-center gap-1 bg-red-50 text-red-600 px-2 py-1 rounded text-xs hover:bg-red-100"
-            >
+            <button key="del" onClick={() => deleteEvenement(row.id)}
+              className="flex items-center gap-1 bg-red-50 text-red-600 px-2 py-1 rounded text-xs hover:bg-red-100">
               <Trash2 size={12} /> Supprimer
             </button>,
           ].filter(Boolean)}
@@ -668,11 +723,8 @@ export default function Evenements() {
         </div>
 
         <div className="mb-4">
-          <select
-            value={selectedEvenementId}
-            onChange={(e) => setSelectedEvenementId(e.target.value)}
-            className="px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none w-full max-w-sm"
-          >
+          <select value={selectedEvenementId} onChange={(e) => setSelectedEvenementId(e.target.value)}
+            className="px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none w-full max-w-sm">
             <option value="">— Sélectionner un évènement —</option>
             {evenements.map((ev) => (
               <option key={ev.id} value={ev.id}>
@@ -693,19 +745,17 @@ export default function Evenements() {
             data={inscriptions}
             loading={loadingInscriptions}
             actions={(row) => [
-              <button
-                key="detail"
-                onClick={() => setModalInscrit(row)}
-                className="flex items-center gap-1 border border-gray-200 text-gray-600 px-2 py-1 rounded text-xs hover:bg-gray-50"
-              >
+              <button key="detail" onClick={() => setModalInscrit(row)}
+                className="flex items-center gap-1 border border-gray-200 text-gray-600 px-2 py-1 rounded text-xs hover:bg-gray-50">
                 <Eye size={12} /> Détails
               </button>,
             ]}
           />
         )}
       </div>
+
       {/* ── Modal détail évènement ──────────────────────────────────────── */}
-      <Modal isOpen={!!modalEvenement} onClose={() => setModalEvenement(null)} title="Détail de l'évènement" size="md">
+      <Modal isOpen={!!modalEvenement} onClose={() => { setModalEvenement(null); setModalTarifs(null) }} title="Détail de l'évènement" size="md">
         {modalEvenement && (
           <div className="space-y-4 text-sm">
             {modalEvenement.image_url && (
@@ -729,10 +779,30 @@ export default function Evenements() {
                 <span className="text-gray-900">{modalEvenement.lieu}</span>
               </div>
             )}
+
+            {/* Tarifs */}
             <div className="flex gap-4">
-              <span className="text-gray-500 w-28 shrink-0">Prix</span>
-              <span className="text-gray-900">{modalEvenement.prix === 0 ? 'Gratuit' : fmtMontant(modalEvenement.prix)}</span>
+              <span className="text-gray-500 w-28 shrink-0">Tarifs</span>
+              <div className="flex-1">
+                {loadingModalTarifs ? (
+                  <span className="text-gray-400 text-xs">Chargement…</span>
+                ) : modalTarifs && modalTarifs.length > 0 ? (
+                  <div className="flex flex-col gap-1">
+                    {modalTarifs.map((t, i) => (
+                      <div key={i} className="flex justify-between items-center bg-gray-50 rounded-lg px-3 py-1.5">
+                        <span className="text-gray-800 font-medium">{t.nom}</span>
+                        <span className="text-gray-700 font-semibold tabular-nums">
+                          {t.prix === 0 ? 'Gratuit' : fmtMontant(t.prix)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <span className="text-gray-900">{modalEvenement.prix === 0 ? 'Gratuit' : fmtMontant(modalEvenement.prix)}</span>
+                )}
+              </div>
             </div>
+
             <div className="flex gap-4">
               <span className="text-gray-500 w-28 shrink-0">Statut</span>
               <Badge label={modalEvenement.est_actif ? 'En ligne' : 'Hors ligne'} value={modalEvenement.est_actif ? 'actif' : 'inactif'} />
@@ -780,6 +850,12 @@ export default function Evenements() {
                 {evenements.find(e => String(e.id) === String(modalInscrit.evenement_id))?.titre || '—'}
               </span>
             </div>
+            {modalInscrit.tarif_nom && (
+              <div className="flex gap-4">
+                <span className="text-gray-500 w-28 shrink-0">Tarif</span>
+                <span className="text-gray-900 font-medium">{modalInscrit.tarif_nom}</span>
+              </div>
+            )}
             <div className="flex gap-4">
               <span className="text-gray-500 w-28 shrink-0">Montant payé</span>
               <span className="text-gray-900 font-medium">

@@ -5,7 +5,7 @@ import { useState, useEffect } from 'react'
 import {
   LayoutDashboard, Mail, Receipt, Heart, Megaphone, Newspaper,
   Star, BookOpen, Mic, Images, Users, Settings, CalendarDays,
-  LogOut, Coins, FileText, MessageSquare, Bell,
+  LogOut, Coins, FileText, MessageSquare, Bell, Lightbulb, HelpCircle,
 } from 'lucide-react'
 
 const NAV_ITEMS = [
@@ -33,6 +33,8 @@ const NAV_ITEMS = [
       { to: '/podcasts',    label: 'Podcasts',       icon: Mic,         perm: 'podcasts'   },
       { to: '/carrousel',   label: 'Carrousel',      icon: Images,      perm: 'carrousel'  },
       { to: '/evenements',  label: 'Évènements',     icon: CalendarDays, perm: 'evenements' },
+      { to: '/saviez-vous',  label: 'Le Saviez-Vous', icon: Lightbulb,    perm: 'annonces'   },
+      { to: '/quiz-biblique', label: 'Quiz Biblique',  icon: HelpCircle,  perm: 'annonces'   },
     ],
   },
   {

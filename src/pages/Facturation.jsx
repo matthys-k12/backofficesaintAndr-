@@ -11,11 +11,20 @@ const ANNEE_COURANTE = new Date().getFullYear()
 const MOIS_COURANT  = new Date().getMonth() + 1
 
 const SERVICE_CONFIG = [
-  { key: 'messe',   label: 'Demande de Messe', table: 'messe_demandes',  statutFilter: null,   dateField: 'created_at'    },
-  { key: 'casuel',  label: 'Casuel',            table: 'casuel_demandes', statutFilter: null,   dateField: 'created_at'    },
-  { key: 'dons',    label: 'Dons',              table: 'dons',            statutFilter: null,   dateField: 'created_at'    },
-  { key: 'denier',  label: 'Denier du culte',   table: 'denier_culte',   statutFilter: 'paye', dateField: 'date_paiement' },
+  { key: 'messe',   label: 'Demande de Messe', table: 'messe_demandes',  statutFilter: null,   dateField: 'created_at',    extraFields: '' },
+  { key: 'casuel',  label: 'Casuel',            table: 'casuel_demandes', statutFilter: null,   dateField: 'created_at',    extraFields: '' },
+  { key: 'dons',    label: 'Dons',              table: 'dons',            statutFilter: null,   dateField: 'created_at',    extraFields: ', campagne_id, frais_plateforme, frais_mobile_money' },
+  { key: 'denier',  label: 'Denier du culte',   table: 'denier_culte',   statutFilter: 'paye', dateField: 'date_paiement', extraFields: '' },
 ]
+
+// Frais opérateur : valeur DB si disponible, sinon 1% calculé
+const getFraisOp    = (r) => r.frais_mobile_money != null ? r.frais_mobile_money : Math.round(r.montant * 0.01)
+// Frais admin WIM : 0 pour app, valeur DB si dispo, sinon 1% calculé
+const getFraisAdmin = (r) => r._isAppDon ? 0 : (r.frais_plateforme != null ? r.frais_plateforme : Math.round(r.montant * 0.01))
+// Revenu St André
+const calcRevSA  = (r) => r._isAppDon ? 0 : Math.max(0, r.montant - getFraisOp(r) - getFraisAdmin(r))
+// Revenu Web Ivoire Média
+const calcRevWIM = (r) => r._isAppDon ? Math.max(0, r.montant - getFraisOp(r)) : getFraisAdmin(r)
 
 function padZ(n) { return String(n).padStart(2, '0') }
 function monthRange(year, month) {
@@ -44,37 +53,50 @@ export default function Facturation() {
       const df = svc.dateField || 'created_at'
       let query = supabase
         .from(svc.table)
-        .select(`user_id, montant, operateur_paiement, ${df}`)
+        .select(`user_id, montant, operateur_paiement, ${df}${svc.extraFields}`)
         .gte(df, start)
         .lt(df, end)
         .order(df, { ascending: false })
 
-      if (svc.statutFilter) {
-        query = query.eq('statut', svc.statutFilter)
-      }
+      if (svc.statutFilter) query = query.eq('statut', svc.statutFilter)
 
       const { data, error } = await query
       if (error) { console.error(svc.table, error); continue }
 
       ;(data || []).forEach(r => all.push({
-        service:      svc.label,
-        user_id:      r.user_id,
-        nom:          null,
-        telephone:    null,
-        montant:      r.montant || 0,
-        operateur:    r.operateur_paiement || '—',
-        reference:    r.reference_transaction || '—',
-        date:         r[df],
+        service:           svc.label,
+        _serviceKey:       svc.key,
+        user_id:           r.user_id,
+        nom:               null,
+        telephone:         null,
+        montant:           r.montant || 0,
+        operateur:         r.operateur_paiement || '—',
+        reference:         r.reference_transaction || '—',
+        date:              r[df],
+        campagne_id:       r.campagne_id || null,
+        frais_plateforme:  r.frais_plateforme ?? null,
+        frais_mobile_money: r.frais_mobile_money ?? null,
+        _isAppDon:         false,
       }))
+    }
+
+    // Résolution des types de campagnes pour les dons
+    const campIds = [...new Set(all.map(r => r.campagne_id).filter(Boolean))]
+    if (campIds.length > 0) {
+      const { data: camps } = await supabase
+        .from('don_campagnes').select('id, type').in('id', campIds)
+      const campTypeMap = {}
+      ;(camps || []).forEach(c => { campTypeMap[c.id] = c.type })
+      all.forEach(r => {
+        if (r.campagne_id) r._isAppDon = campTypeMap[r.campagne_id] === 'app'
+      })
     }
 
     // Résolution des profils utilisateurs
     const allIds = [...new Set(all.map(r => r.user_id).filter(Boolean))]
     if (allIds.length > 0) {
       const { data: profs } = await supabase
-        .from('profiles')
-        .select('id, nom, telephone')
-        .in('id', allIds)
+        .from('profiles').select('id, nom, telephone').in('id', allIds)
       const profsMap = {}
       ;(profs || []).forEach(p => { profsMap[p.id] = { nom: p.nom, telephone: p.telephone } })
       all.forEach(r => {
@@ -93,50 +115,29 @@ export default function Facturation() {
   useEffect(() => { load() }, [load])
 
   // ── Agrégats globaux ──────────────────────────────────────────────
-  const totalMontant  = rows.reduce((s, r) => s + r.montant, 0)
-  const totalWIM      = rows.reduce((s, r) => s + Math.round(r.montant * 0.01), 0)
-  const totalFraisOp  = rows.reduce((s, r) => s + Math.round(r.montant * 0.01), 0)
-  const totalRevTotal = Math.round(totalMontant * 1.02)
+  const totalSA      = rows.reduce((s, r) => s + calcRevSA(r),    0)
+  const totalWIM     = rows.reduce((s, r) => s + calcRevWIM(r),   0)
+  const totalFraisOp = rows.reduce((s, r) => s + getFraisOp(r),   0)
+  const totalMontant = rows.reduce((s, r) => s + r.montant,       0)
 
   // ── Répartition par service ───────────────────────────────────────
   const byService = SERVICE_CONFIG.map(svc => {
     const svcRows = rows.filter(r => r.service === svc.label)
-    const net     = svcRows.reduce((s, r) => s + r.montant, 0)
     return {
-      label:    svc.label,
-      nb:       svcRows.length,
-      net,
-      wim:      svcRows.reduce((s, r) => s + Math.round(r.montant * 0.01), 0),
-      fraisOp:  svcRows.reduce((s, r) => s + Math.round(r.montant * 0.01), 0),
+      label:   svc.label,
+      nb:      svcRows.length,
+      sa:      svcRows.reduce((s, r) => s + calcRevSA(r),  0),
+      wim:     svcRows.reduce((s, r) => s + calcRevWIM(r), 0),
+      fraisOp: svcRows.reduce((s, r) => s + getFraisOp(r), 0),
     }
   })
 
   const KPI_CARDS = [
-    {
-      label: 'TRANSACTIONS',
-      value: loading ? '…' : rows.length,
-      bg:    '#111111',
-    },
-    {
-      label: 'REVENU TOTAL',
-      value: loading ? '…' : fmtMontant(totalRevTotal),
-      bg:    '#1A237E',
-    },
-    {
-      label: 'REVENU ST ANDRE',
-      value: loading ? '…' : fmtMontant(totalMontant),
-      bg:    '#15803d',
-    },
-    {
-      label: 'REVENU WEB IVOIRE MEDIA',
-      value: loading ? '…' : fmtMontant(totalWIM),
-      bg:    '#f97316',
-    },
-    {
-      label: 'FRAIS OPÉRATEUR',
-      value: loading ? '…' : fmtMontant(totalFraisOp),
-      bg:    '#6b7280',
-    },
+    { label: 'TRANSACTIONS',          value: loading ? '…' : rows.length,           bg: '#111111' },
+    { label: 'MONTANT COLLECTÉ',      value: loading ? '…' : fmtMontant(totalMontant), bg: '#1A237E' },
+    { label: 'REVENU ST ANDRE',       value: loading ? '…' : fmtMontant(totalSA),    bg: '#15803d' },
+    { label: 'REVENU WEB IVOIRE',     value: loading ? '…' : fmtMontant(totalWIM),   bg: '#f97316' },
+    { label: 'FRAIS OPÉRATEUR (1%)',  value: loading ? '…' : fmtMontant(totalFraisOp), bg: '#6b7280' },
   ]
 
   const thStyle = {
@@ -236,18 +237,10 @@ export default function Facturation() {
                   onMouseLeave={e => (e.currentTarget.style.backgroundColor = 'transparent')}
                 >
                   <td className="px-4 py-3 text-sm font-semibold text-gray-800">{svc.label}</td>
-                  <td className="px-4 py-3 text-sm text-gray-600" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                    {svc.nb}
-                  </td>
-                  <td className="px-4 py-3 text-sm font-bold" style={{ color: '#15803d', fontVariantNumeric: 'tabular-nums' }}>
-                    {fmtMontant(svc.net)}
-                  </td>
-                  <td className="px-4 py-3 text-sm font-bold" style={{ color: '#f97316', fontVariantNumeric: 'tabular-nums' }}>
-                    {fmtMontant(svc.wim)}
-                  </td>
-                  <td className="px-4 py-3 text-sm font-bold" style={{ color: '#6b7280', fontVariantNumeric: 'tabular-nums' }}>
-                    {fmtMontant(svc.fraisOp)}
-                  </td>
+                  <td className="px-4 py-3 text-sm text-gray-600" style={{ fontVariantNumeric: 'tabular-nums' }}>{svc.nb}</td>
+                  <td className="px-4 py-3 text-sm font-bold" style={{ color: '#15803d', fontVariantNumeric: 'tabular-nums' }}>{fmtMontant(svc.sa)}</td>
+                  <td className="px-4 py-3 text-sm font-bold" style={{ color: '#f97316', fontVariantNumeric: 'tabular-nums' }}>{fmtMontant(svc.wim)}</td>
+                  <td className="px-4 py-3 text-sm font-bold" style={{ color: '#6b7280', fontVariantNumeric: 'tabular-nums' }}>{fmtMontant(svc.fraisOp)}</td>
                 </tr>
               ))}
             </tbody>
@@ -257,15 +250,9 @@ export default function Facturation() {
                 <td className="px-4 py-3.5 text-sm font-bold text-white" style={{ fontVariantNumeric: 'tabular-nums' }}>
                   {rows.length}
                 </td>
-                <td className="px-4 py-3.5 text-sm font-bold text-white" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                  {fmtMontant(totalMontant)}
-                </td>
-                <td className="px-4 py-3.5 text-sm font-bold text-white" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                  {fmtMontant(totalWIM)}
-                </td>
-                <td className="px-4 py-3.5 text-sm font-bold text-white" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                  {fmtMontant(totalFraisOp)}
-                </td>
+                <td className="px-4 py-3.5 text-sm font-bold text-white" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmtMontant(totalSA)}</td>
+                <td className="px-4 py-3.5 text-sm font-bold text-white" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmtMontant(totalWIM)}</td>
+                <td className="px-4 py-3.5 text-sm font-bold text-white" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmtMontant(totalFraisOp)}</td>
               </tr>
             </tfoot>
           </table>
@@ -316,69 +303,30 @@ export default function Facturation() {
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map((r, i) => {
-                    const wim     = Math.round(r.montant * 0.01)
-                    const fraisOp = Math.round(r.montant * 0.01)
-                    return (
-                      <tr
-                        key={i}
-                        style={{ borderBottom: '1px solid #f5f1ec' }}
-                        onMouseEnter={e => (e.currentTarget.style.backgroundColor = '#FDFAF7')}
-                        onMouseLeave={e => (e.currentTarget.style.backgroundColor = 'transparent')}
-                      >
-                        <td className="px-4 py-3 text-xs text-gray-500 whitespace-nowrap">
-                          {fmtDate(r.date)}
-                        </td>
-                        <td className="px-4 py-3">
-                          <span
-                            className="text-xs font-semibold px-2 py-0.5 rounded-full whitespace-nowrap"
-                            style={{ backgroundColor: '#eef0fb', color: '#1A237E' }}
-                          >
-                            {r.service}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 text-sm font-medium text-gray-800 whitespace-nowrap">
-                          {r.nom}
-                        </td>
-                        <td className="px-4 py-3 text-xs text-gray-500 whitespace-nowrap">
-                          {r.telephone}
-                        </td>
-                        <td
-                          className="px-4 py-3 text-xs text-gray-500 whitespace-nowrap"
-                          style={{ fontVariantNumeric: 'tabular-nums' }}
-                        >
-                          {r.reference}
-                        </td>
-                        <td className="px-4 py-3 text-xs text-gray-500 whitespace-nowrap">
-                          {r.operateur}
-                        </td>
-                        <td
-                          className="px-4 py-3 text-sm font-semibold text-gray-800 whitespace-nowrap"
-                          style={{ fontVariantNumeric: 'tabular-nums' }}
-                        >
-                          {fmtMontant(r.montant)}
-                        </td>
-                        <td
-                          className="px-4 py-3 text-sm font-bold whitespace-nowrap"
-                          style={{ color: '#15803d', fontVariantNumeric: 'tabular-nums' }}
-                        >
-                          {fmtMontant(r.montant)}
-                        </td>
-                        <td
-                          className="px-4 py-3 text-sm font-bold whitespace-nowrap"
-                          style={{ color: '#f97316', fontVariantNumeric: 'tabular-nums' }}
-                        >
-                          {fmtMontant(wim)}
-                        </td>
-                        <td
-                          className="px-4 py-3 text-sm font-bold whitespace-nowrap"
-                          style={{ color: '#6b7280', fontVariantNumeric: 'tabular-nums' }}
-                        >
-                          {fmtMontant(fraisOp)}
-                        </td>
-                      </tr>
-                    )
-                  })}
+                  {rows.map((r, i) => (
+                    <tr
+                      key={i}
+                      style={{ borderBottom: '1px solid #f5f1ec' }}
+                      onMouseEnter={e => (e.currentTarget.style.backgroundColor = '#FDFAF7')}
+                      onMouseLeave={e => (e.currentTarget.style.backgroundColor = 'transparent')}
+                    >
+                      <td className="px-4 py-3 text-xs text-gray-500 whitespace-nowrap">{fmtDate(r.date)}</td>
+                      <td className="px-4 py-3">
+                        <span className="text-xs font-semibold px-2 py-0.5 rounded-full whitespace-nowrap"
+                          style={{ backgroundColor: r._isAppDon ? '#eef0fb' : '#f3f4f6', color: r._isAppDon ? '#1A237E' : '#374151' }}>
+                          {r._isAppDon ? '💻 ' : ''}{r.service}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-sm font-medium text-gray-800 whitespace-nowrap">{r.nom}</td>
+                      <td className="px-4 py-3 text-xs text-gray-500 whitespace-nowrap">{r.telephone}</td>
+                      <td className="px-4 py-3 text-xs text-gray-500 whitespace-nowrap" style={{ fontVariantNumeric: 'tabular-nums' }}>{r.reference}</td>
+                      <td className="px-4 py-3 text-xs text-gray-500 whitespace-nowrap">{r.operateur}</td>
+                      <td className="px-4 py-3 text-sm font-semibold text-gray-800 whitespace-nowrap" style={{ fontVariantNumeric: 'tabular-nums' }}>{fmtMontant(r.montant)}</td>
+                      <td className="px-4 py-3 text-sm font-bold whitespace-nowrap" style={{ color: calcRevSA(r) > 0 ? '#15803d' : '#d1d5db', fontVariantNumeric: 'tabular-nums' }}>{fmtMontant(calcRevSA(r))}</td>
+                      <td className="px-4 py-3 text-sm font-bold whitespace-nowrap" style={{ color: '#f97316', fontVariantNumeric: 'tabular-nums' }}>{fmtMontant(calcRevWIM(r))}</td>
+                      <td className="px-4 py-3 text-sm font-bold whitespace-nowrap" style={{ color: '#6b7280', fontVariantNumeric: 'tabular-nums' }}>{fmtMontant(getFraisOp(r))}</td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>

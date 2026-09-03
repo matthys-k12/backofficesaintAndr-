@@ -124,6 +124,21 @@ export default function Annonces() {
         await q(supabase.from('annonces').update(payload).eq('id', editAnnonce.id))
       } else {
         await q(supabase.from('annonces').insert(payload))
+        // Envoyer une notification push aux abonnés "annonces"
+        try {
+          await supabase.functions.invoke('send-push', {
+            body: {
+              titre: data.titre,
+              corps: data.contenu?.substring(0, 150) || '',
+              topic: 'annonces',
+            },
+          })
+          await supabase.from('push_notifications').insert({
+            titre: data.titre,
+            corps: data.contenu?.substring(0, 150) || '',
+            type: 'annonce',
+          })
+        } catch (_) { /* notification non bloquante */ }
       }
       showToast('Annonce enregistrée ✓')
       setModalAnnonce(false)
