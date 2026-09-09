@@ -5,6 +5,7 @@ import { supabase, q } from '../lib/supabase'
 import Modal from '../components/Modal'
 import DataTable from '../components/DataTable'
 import Toast from '../components/Toast'
+import ImageUpload from '../components/ImageUpload'
 
 const PAGE_SIZE = 20
 
@@ -16,6 +17,7 @@ export default function SaviezVous() {
   const [page, setPage] = useState(1)
   const [total, setTotal] = useState(0)
   const [toast, setToast] = useState(null)
+  const [imageUrl, setImageUrl] = useState('')
 
   const { register, handleSubmit, reset, formState: { isSubmitting } } = useForm()
   const showToast = (msg, type = 'success') => setToast({ msg, type })
@@ -44,18 +46,19 @@ export default function SaviezVous() {
 
   const openAdd = () => {
     setEditItem(null)
-    reset({ titre: '', contenu: '', corps: '', source: '', image_url: '', ordre: 0, est_actif: true })
+    setImageUrl('')
+    reset({ titre: '', contenu: '', corps: '', source: '', ordre: 0, est_actif: true })
     setModal(true)
   }
 
   const openEdit = (item) => {
     setEditItem(item)
+    setImageUrl(item.image_url || '')
     reset({
       titre: item.titre || '',
       contenu: item.contenu,
       corps: item.corps || '',
       source: item.source || '',
-      image_url: item.image_url || '',
       ordre: item.ordre ?? 0,
       est_actif: item.est_actif,
     })
@@ -69,7 +72,7 @@ export default function SaviezVous() {
         contenu: data.contenu.trim(),
         corps: data.corps?.trim() || null,
         source: data.source?.trim() || null,
-        image_url: data.image_url?.trim() || null,
+        image_url: imageUrl || null,
         ordre: parseInt(data.ordre) || 0,
         est_actif: data.est_actif === true || data.est_actif === 'true',
       }
@@ -264,16 +267,15 @@ export default function SaviezVous() {
             />
           </div>
 
-          {/* Image URL */}
+          {/* Image */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              URL de l'image <span className="text-gray-400 font-normal">(optionnel)</span>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Image <span className="text-gray-400 font-normal">(optionnel)</span>
             </label>
-            <input
-              {...register('image_url')}
-              type="url"
-              placeholder="https://…"
-              className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none font-mono"
+            <ImageUpload
+              bucket="saviez-vous"
+              currentUrl={imageUrl || undefined}
+              onUpload={url => setImageUrl(url || '')}
             />
           </div>
 
